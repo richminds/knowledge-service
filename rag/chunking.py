@@ -35,7 +35,7 @@ def chunk_documents(
 
     This is a plain (non-async) function — the semantic strategy calls
     ``embeddings.embed_documents`` synchronously (one blocking HTTP round
-    trip to the LLM Gateway). Callers on the async path (see ``graph.py``'s
+    trip to the LLM Gateway). Callers on the async path (see ``ingestion.py``'s
     ``_chunk`` node) run this off the event loop via ``run_in_threadpool``.
     """
     if strategy == "semantic":

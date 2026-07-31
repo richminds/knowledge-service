@@ -126,12 +126,24 @@ class KnowledgeServiceClient:
     # ------------------------------------------------------------ ingestion
 
     async def ingest(
-        self, input_paths: list[str], chunk_strategy: str = "recursive"
+        self,
+        input_paths: list[str],
+        chunk_strategy: str = "recursive",
+        user_id: str | None = None,
     ) -> IngestResult:
-        """Start ingestion of server-side file/directory paths."""
+        """Start ingestion of server-side file/directory paths.
+
+        ``user_id`` is the end-user this ingestion is on behalf of — recorded
+        as ``uploaded_by`` on every resulting chunk's metadata. Leave unset to
+        record this client's own principal instead (resolved server-side).
+        """
         response = await self._client.post(
             "/v1/ingest",
-            json={"input_paths": input_paths, "chunk_strategy": chunk_strategy},
+            json={
+                "input_paths": input_paths,
+                "chunk_strategy": chunk_strategy,
+                "user_id": user_id,
+            },
         )
         _raise_for_error(response)
         return IngestResult(**response.json())
@@ -140,16 +152,23 @@ class KnowledgeServiceClient:
         self,
         files: list[tuple[str, bytes, str | None]],
         chunk_strategy: str = "recursive",
+        user_id: str | None = None,
     ) -> IngestResult:
-        """Upload files (filename, bytes, content_type) and ingest them."""
+        """Upload files (filename, bytes, content_type) and ingest them.
+
+        See ``ingest()`` for what ``user_id`` records.
+        """
         multipart = [
             ("files", (name, data, content_type or "application/octet-stream"))
             for name, data, content_type in files
         ]
+        form_data: dict[str, str] = {"chunk_strategy": chunk_strategy}
+        if user_id:
+            form_data["user_id"] = user_id
         response = await self._client.post(
             "/v1/upload",
             files=multipart,
-            data={"chunk_strategy": chunk_strategy},
+            data=form_data,
         )
         _raise_for_error(response)
         return IngestResult(**response.json())

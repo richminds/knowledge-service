@@ -22,7 +22,7 @@ router = APIRouter(prefix="/v1", tags=["query"])
     "/query",
     response_model=QueryResponse,
     summary="Ask a question via RAG",
-    responses={413: {"description": "Question too long."}},
+    responses={413: {"description": "Question too long, or too many metadata filter keys."}},
 )
 async def rag_query(body: QueryRequest, principal: str = Depends(get_principal)) -> QueryResponse:
     """Run the full RAG pipeline (embed → retrieve → rerank → generate)."""
@@ -32,6 +32,15 @@ async def rag_query(body: QueryRequest, principal: str = Depends(get_principal))
             detail=(
                 f"Question is {len(body.question)} chars, over the "
                 f"{gateway_settings.max_question_length} char limit."
+            ),
+        )
+    filter_size = len(body.metadata_filter) if body.metadata_filter else 0
+    if filter_size > gateway_settings.max_metadata_filter_keys:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"metadata_filter has {filter_size} keys, over the "
+                f"{gateway_settings.max_metadata_filter_keys} key limit."
             ),
         )
     logger.debug("Query from %s: %r", principal, body.question[:200])

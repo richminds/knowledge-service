@@ -1,10 +1,11 @@
 """FastAPI dependencies shared across controllers.
 
 Unlike the LLM Gateway, this service has no single "client" singleton to
-build in the lifespan and hand out via ``Depends()`` — the RAG pipeline
-(``rag/graph.py``) and the LLM Gateway HTTP clients (``rag/llm_gateway_client.py``)
-are already module-level singletons/pure functions. What every route does
-need is the authenticated identity set by ``AuthMiddleware``.
+build in the lifespan and hand out via ``Depends()`` — the RAG pipelines
+(``rag/ingestion.py``, ``rag/retrieval.py``) and the LLM Gateway HTTP clients
+(``rag/llm_gateway_client.py``) are already module-level singletons/pure
+functions. What every route does need is the authenticated identity set by
+``AuthMiddleware``.
 """
 from __future__ import annotations
 
@@ -42,3 +43,15 @@ def require_admin(role: str = Depends(get_role)) -> str:
             detail="This endpoint requires the admin role.",
         )
     return role
+
+
+def resolve_user_id(requested: str | None, principal: str = Depends(get_principal)) -> str:
+    """Explicit end-user ID wins; otherwise fall back to the authenticated principal.
+
+    Used on ingestion routes to resolve who a document upload is recorded as
+    ``uploaded_by`` (see rag/loader.py) — mirrors the LLM Gateway's
+    ``resolve_caller`` pattern. A calling application acting on behalf of many
+    end-users (e.g. Portless) should pass its own end-user's ID explicitly;
+    a caller with no such concept just gets its own principal recorded.
+    """
+    return (requested or "").strip() or principal

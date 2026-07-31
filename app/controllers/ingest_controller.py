@@ -10,7 +10,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
 
-from ..dependencies import get_principal
+from ..dependencies import get_principal, resolve_user_id
 from ..models.ingest_model import IngestRequest, IngestResponse, JobStatusResponse
 from ..services import ingest_service
 
@@ -30,8 +30,12 @@ async def start_ingest(
     background_tasks: BackgroundTasks,
     principal: str = Depends(get_principal),
 ) -> IngestResponse:
-    logger.info("Ingest requested by %s: %d path(s)", principal, len(body.input_paths))
-    return await ingest_service.start_ingest(body, background_tasks)
+    user_id = resolve_user_id(body.user_id, principal)
+    logger.info(
+        "Ingest requested by %s (user_id=%s): %d path(s)",
+        principal, user_id, len(body.input_paths),
+    )
+    return await ingest_service.start_ingest(body, background_tasks, uploaded_by=user_id)
 
 
 @router.post(
@@ -44,10 +48,20 @@ async def upload_and_ingest(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(..., description="Knowledge files to ingest."),
     chunk_strategy: str = Form("recursive"),
+    user_id: str | None = Form(
+        default=None,
+        description="End-user this upload is on behalf of; defaults to the authenticated caller.",
+    ),
     principal: str = Depends(get_principal),
 ) -> IngestResponse:
-    logger.info("Upload requested by %s: %d file(s)", principal, len(files))
-    return await ingest_service.upload_and_ingest(files, chunk_strategy, background_tasks)
+    resolved_user_id = resolve_user_id(user_id, principal)
+    logger.info(
+        "Upload requested by %s (user_id=%s): %d file(s)",
+        principal, resolved_user_id, len(files),
+    )
+    return await ingest_service.upload_and_ingest(
+        files, chunk_strategy, background_tasks, uploaded_by=resolved_user_id
+    )
 
 
 @router.get(

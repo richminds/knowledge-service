@@ -12,9 +12,10 @@ Activation:
   ``RAG_GRAPH_DB_URI`` / ``USER`` / ``PASSWORD``). When disabled — or when the
   backend/credentials are missing, or a required driver isn't installed — the
   store degrades to a safe no-op that returns empty results, so the vector +
-  keyword + RRF pipeline keeps working unchanged. ``graph.py`` never has to change:
-  it always talks to the ``GraphStore`` wrapper, which delegates to whichever
-  backend resolved at import time.
+  keyword + RRF pipeline keeps working unchanged. ``ingestion.py`` /
+  ``retrieval.py`` never have to change: they always talk to the
+  ``GraphStore`` wrapper, which delegates to whichever backend resolved at
+  import time.
 
 Graph schema (identical shape across backends — Mongo just stores it as
 documents with array fields instead of separate nodes/edges):
@@ -468,8 +469,9 @@ def _resolve_graph_backend() -> Any:
 class GraphStore:
     """Public wrapper — delegates to whichever backend config resolves to.
 
-    ``graph.py`` instantiates ``GraphStore()`` per node; the underlying Neo4j
-    driver is cached module-side, so this stays cheap.
+    ``ingestion.py`` and ``retrieval.py`` instantiate ``GraphStore()`` per
+    node; the underlying Neo4j driver is cached module-side, so this stays
+    cheap.
     """
 
     def __init__(self) -> None:

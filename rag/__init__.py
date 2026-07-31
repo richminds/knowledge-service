@@ -10,8 +10,11 @@ split in the LLM Gateway project this service was built alongside.
 The public names (``query``, ``ingest``, the graph builders, ``settings``) are
 loaded lazily via PEP 562 ``__getattr__``, so importing this package — or any
 single submodule such as a graph-store backend — stays cheap: the heavy
-pipeline in ``graph.py`` (and its optional dependencies) is only imported the
-first time one of those names is actually used.
+pipelines in ``ingestion.py`` / ``retrieval.py`` (and their optional
+dependencies) are only imported the first time one of those names is
+actually used. Ingestion and retrieval are separate modules — see
+``ingestion.py``'s docstring for why — so importing one never pulls in the
+other's dependencies either.
 """
 from __future__ import annotations
 
@@ -30,10 +33,10 @@ __all__ = [
 
 # name → relative module that defines it
 _LAZY_EXPORTS = {
-    "build_ingestion_graph": ".graph",
-    "build_query_graph": ".graph",
-    "ingest": ".graph",
-    "query": ".graph",
+    "build_ingestion_graph": ".ingestion",
+    "ingest": ".ingestion",
+    "build_query_graph": ".retrieval",
+    "query": ".retrieval",
     "settings": ".config",
 }
 
@@ -54,4 +57,5 @@ def __dir__() -> list[str]:
 
 if TYPE_CHECKING:  # import-time only for type checkers, never at runtime
     from .config import settings
-    from .graph import build_ingestion_graph, build_query_graph, ingest, query
+    from .ingestion import build_ingestion_graph, ingest
+    from .retrieval import build_query_graph, query

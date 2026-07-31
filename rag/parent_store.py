@@ -100,8 +100,9 @@ class MongoParentStore:
 
 
 # ──────────────────────────────────────────── backward-compatible sync shim
-# graph.py calls the async MongoParentStore directly; these thin helpers
-# exist so any remaining sync code can import them without breakage.
+# ingestion.py and retrieval.py call the async MongoParentStore directly;
+# these thin helpers exist so any remaining sync code can import them
+# without breakage.
 
 async def save_parent_documents(parent_documents: dict[str, Document]) -> None:
     """Async wrapper for MongoParentStore.save — preferred entry point."""

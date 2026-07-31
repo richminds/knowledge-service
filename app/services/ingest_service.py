@@ -21,7 +21,7 @@ from typing import Any
 from fastapi import BackgroundTasks, HTTPException, UploadFile, status
 
 from rag.file_store import get_file_store
-from rag.graph import ingest
+from rag.ingestion import ingest
 
 from ..config import gateway_settings
 from ..models.ingest_model import IngestRequest, IngestResponse, JobStatusResponse
@@ -45,7 +45,9 @@ def _new_job() -> str:
     return job_id
 
 
-async def start_ingest(request: IngestRequest, background_tasks: BackgroundTasks) -> IngestResponse:
+async def start_ingest(
+    request: IngestRequest, background_tasks: BackgroundTasks, uploaded_by: str = ""
+) -> IngestResponse:
     """Submit an ingestion job for server-side paths. Returns immediately with a job_id to poll."""
     job_id = _new_job()
     background_tasks.add_task(
@@ -53,6 +55,7 @@ async def start_ingest(request: IngestRequest, background_tasks: BackgroundTasks
         job_id=job_id,
         input_paths=request.input_paths,
         chunk_strategy=request.chunk_strategy,
+        uploaded_by=uploaded_by,
     )
     return IngestResponse(
         job_id=job_id,
@@ -65,6 +68,7 @@ async def upload_and_ingest(
     files: list[UploadFile],
     chunk_strategy: str,
     background_tasks: BackgroundTasks,
+    uploaded_by: str = "",
 ) -> IngestResponse:
     """Accept uploads, persist the bytes durably (GridFS), then ingest.
 
@@ -111,7 +115,11 @@ async def upload_and_ingest(
             await store.save(
                 name, data,
                 content_type=f.content_type,
-                metadata={"origin": "upload", "chunk_strategy": chunk_strategy},
+                metadata={
+                    "origin": "upload",
+                    "chunk_strategy": chunk_strategy,
+                    "uploaded_by": uploaded_by,
+                },
             )
             persisted += 1
         except Exception as exc:  # noqa: BLE001
@@ -138,6 +146,7 @@ async def upload_and_ingest(
         job_id=job_id,
         input_paths=saved_paths,
         chunk_strategy=chunk_strategy,
+        uploaded_by=uploaded_by,
     )
     return IngestResponse(
         job_id=job_id,
@@ -158,11 +167,15 @@ def get_job_status(job_id: str) -> JobStatusResponse:
     return JobStatusResponse(job_id=job_id, **job)
 
 
-async def _run_ingest_job(job_id: str, input_paths: list[str], chunk_strategy: str) -> None:
+async def _run_ingest_job(
+    job_id: str, input_paths: list[str], chunk_strategy: str, uploaded_by: str = ""
+) -> None:
     """Execute ingestion in the background and update the job registry."""
     _jobs[job_id]["status"] = "running"
     try:
-        result = await ingest(input_paths=input_paths, chunk_strategy=chunk_strategy)  # type: ignore[arg-type]
+        result = await ingest(
+            input_paths=input_paths, chunk_strategy=chunk_strategy, uploaded_by=uploaded_by
+        )  # type: ignore[arg-type]
         _jobs[job_id].update(
             {
                 "status": "completed",

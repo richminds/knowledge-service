@@ -17,6 +17,14 @@ class IngestRequest(BaseModel):
         default="recursive",
         description="'recursive' (default, fast) or 'semantic' (embedding-based, costs more).",
     )
+    user_id: str | None = Field(
+        default=None,
+        description=(
+            "End-user this ingestion is on behalf of, recorded as `uploaded_by` on every "
+            "resulting chunk's metadata. Defaults to the authenticated caller (principal) "
+            "when omitted — mirrors QueryRequest.user_id, the retrieval-side equivalent."
+        ),
+    )
 
 
 class IngestResponse(BaseModel):

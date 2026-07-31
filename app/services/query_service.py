@@ -5,8 +5,8 @@ import logging
 
 from fastapi import HTTPException, status
 
-from rag.graph import query as rag_query
 from rag.llm_gateway_sdk import GatewayError
+from rag.retrieval import query as rag_query
 
 from ..models.query_model import QueryRequest, QueryResponse
 

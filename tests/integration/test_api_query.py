@@ -16,8 +16,11 @@ def mock_rag_query(monkeypatch):
             },
             "evaluation_metrics": {
                 "faithfulness": 1.0,
-                "context_precision": 1.0,
+                "precision": 1.0,
+                "recall": 1.0,
                 "answer_relevance": 1.0,
+                "confidence_score": 1.0,
+                "confidence_level": "high",
                 "evaluator": "local",
                 "advanced_notes": "Local lexical metrics only.",
             },
@@ -34,6 +37,7 @@ def test_query_endpoint_returns_pipeline_result(api, mock_rag_query):
     assert body["answer"] == "This is the answer. [1]"
     assert body["citation_validation"]["valid"] is True
     assert body["evaluation_metrics"]["evaluator"] == "local"
+    assert body["evaluation_metrics"]["confidence_level"] == "high"
 
 
 def test_query_endpoint_rejects_overlong_question(api):

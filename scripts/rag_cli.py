@@ -20,7 +20,8 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from rag.graph import build_ingestion_graph, build_query_graph  # noqa: E402
+from rag.ingestion import build_ingestion_graph  # noqa: E402
+from rag.retrieval import build_query_graph  # noqa: E402
 
 
 def main() -> None:
@@ -38,6 +39,9 @@ def main() -> None:
         choices=["recursive", "semantic"],
         default="recursive",
         help="Chunking strategy",
+    )
+    ingest_parser.add_argument(
+        "--user", default=None, help="User ID to record as uploaded_by on every chunk"
     )
 
     ask_parser = subparsers.add_parser(
@@ -61,7 +65,13 @@ def main() -> None:
             raise SystemExit(1)
         graph = build_ingestion_graph()
         result = asyncio.run(
-            graph.ainvoke({"input_paths": args.path, "chunk_strategy": args.strategy})
+            graph.ainvoke(
+                {
+                    "input_paths": args.path,
+                    "chunk_strategy": args.strategy,
+                    "uploaded_by": args.user or "",
+                }
+            )
         )
         print(f"Inserted vector chunks: {result.get('inserted_count', 0)}")
         print(f"Inserted graph chunks: {result.get('graph_inserted_count', 0)}")

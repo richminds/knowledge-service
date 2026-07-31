@@ -35,6 +35,10 @@ class StoredFile(BaseModel):
     backend: str
     content_type: str | None = None
     uploaded_at: str | None = None
+    # End-user this file was uploaded on behalf of (see rag/loader.py's
+    # `uploaded_by` document metadata for the same concept applied to
+    # ingested chunks) — provenance only, not an access-control field.
+    uploaded_by: str | None = None
 
 
 @runtime_checkable
@@ -104,6 +108,7 @@ class MongoGridFSFileStore:
             size=len(data),
             backend=self.backend,
             content_type=content_type,
+            uploaded_by=meta.get("uploaded_by") or None,
         )
 
     async def read(self, file_id: str) -> bytes:
@@ -142,6 +147,7 @@ class MongoGridFSFileStore:
                     backend=self.backend,
                     content_type=meta.get("content_type"),
                     uploaded_at=upload_date.isoformat() if upload_date else None,
+                    uploaded_by=meta.get("uploaded_by") or None,
                 )
             )
         return out

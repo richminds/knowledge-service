@@ -17,6 +17,7 @@ class FileEntry(BaseModel):
     backend: str
     content_type: str | None = None
     uploaded_at: str | None = None
+    uploaded_by: str | None = None
 
 
 class FilesListResponse(BaseModel):

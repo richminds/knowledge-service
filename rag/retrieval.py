@@ -1,12 +1,9 @@
-"""LangGraph orchestration for ingestion and query pipelines.
+"""LangGraph orchestration for the query/retrieval pipeline.
 
-Both graphs are fully async so MongoDB and LLM Gateway calls never block
-the FastAPI event loop.
+Separated from ``ingestion.py`` (the write-side pipeline) because the two are
+independent concerns — see that module's docstring for the rationale.
 
-Ingestion pipeline:
-  parse_and_load → chunk → embed_and_insert → graph_insert → END
-
-Query pipeline:
+Pipeline:
   embed_query → semantic_search ──┐
                 keyword_search ──┤
                   graph_search ──┤→ hybrid_fusion → parent_child_expand
@@ -17,44 +14,31 @@ Query pipeline:
 safety_filter (prompt-injection screening) runs on the full merged chunk
 list after knee-point selection, so web-search chunks are screened exactly
 like internal chunks before anything reaches augment/generate.
+
+Fully async so MongoDB and LLM Gateway calls never block the FastAPI event
+loop.
 """
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Any, TypedDict
 
 from langchain_core.documents import Document
 from langgraph.graph import END, StateGraph
-from starlette.concurrency import run_in_threadpool
 
 from .authorization import filter_authorized_results
-from .chunking import ChunkStrategy, chunk_documents
 from .citations import CitationValidation, validate_citations
 from .config import settings
 from .embeddings import get_embeddings
 from .evaluation import EvaluationMetrics, evaluate_answer
 from .graph_store import GraphStore
 from .llm import build_augmented_prompt, generate_answer
-from .loader import load_documents
-from .parent_store import MongoParentStore
 from .rerank import rerank, select_by_knee_point
 from .security import afilter_prompt_injection_chunks
 from .vector_store import ScoredDocument, VectorStore, expand_parent_context, hybrid_fusion
 from .web_search import WebSearchStore
 
 logger = logging.getLogger(__name__)
-
-
-# ──────────────────────────────────────────────────────── state schemas
-
-class IngestionState(TypedDict, total=False):
-    input_paths: list[str]
-    chunk_strategy: ChunkStrategy
-    raw_documents: list[Document]
-    chunks: list[Document]
-    inserted_count: int
-    graph_inserted_count: int
 
 
 class QueryState(TypedDict, total=False):
@@ -75,23 +59,6 @@ class QueryState(TypedDict, total=False):
     answer: str
     citation_validation: CitationValidation
     evaluation_metrics: EvaluationMetrics
-
-
-# ──────────────────────────────────────────────────────── graph builders
-
-def build_ingestion_graph():
-    """Compile the async LangGraph ingestion pipeline."""
-    graph = StateGraph(IngestionState)
-    graph.add_node("parse_and_load", _parse_and_load)
-    graph.add_node("chunk", _chunk)
-    graph.add_node("embed_and_insert", _embed_and_insert)
-    graph.add_node("graph_insert", _graph_insert)
-    graph.set_entry_point("parse_and_load")
-    graph.add_edge("parse_and_load", "chunk")
-    graph.add_edge("chunk", "embed_and_insert")
-    graph.add_edge("embed_and_insert", "graph_insert")
-    graph.add_edge("graph_insert", END)
-    return graph.compile()
 
 
 def build_query_graph():
@@ -130,58 +97,7 @@ def build_query_graph():
     return graph.compile()
 
 
-# ──────────────────────────────────────────────── ingestion nodes
-
-async def _parse_and_load(state: IngestionState) -> IngestionState:
-    """Load raw files from input_paths into LangChain Documents."""
-    raw_paths = state.get("input_paths") or []
-    paths = [Path(p) for p in raw_paths] if raw_paths else []
-    raw_documents = load_documents(paths)
-    logger.info("parse_and_load: loaded %d document(s).", len(raw_documents))
-    return {"raw_documents": raw_documents}
-
-
-async def _chunk(state: IngestionState) -> IngestionState:
-    """Split documents into child chunks and persist parent context to MongoDB.
-
-    ``chunk_documents`` is a plain (non-async) function whose semantic
-    strategy makes a blocking embedding call to the LLM Gateway — run it in
-    the threadpool so a semantic-strategy ingestion never stalls the event
-    loop, mirroring how the LLM Gateway itself pushes its own blocking
-    embedding calls off the loop (see its app/services/embedding_service.py).
-    """
-    embeddings = get_embeddings()
-    strategy: ChunkStrategy = state.get("chunk_strategy", "recursive")
-    chunks, parent_docs = await run_in_threadpool(
-        chunk_documents, state.get("raw_documents", []), embeddings, strategy
-    )
-
-    # Persist parent docs asynchronously before chunks are embedded
-    if parent_docs:
-        await MongoParentStore().save(parent_docs)
-        logger.debug("chunk: saved %d parent doc(s) to MongoDB.", len(parent_docs))
-
-    logger.info("chunk: produced %d child chunk(s).", len(chunks))
-    return {"chunks": chunks}
-
-
-async def _embed_and_insert(state: IngestionState) -> IngestionState:
-    """Embed child chunks and upsert them into the Atlas vector collection."""
-    embeddings = get_embeddings()
-    vector_store = VectorStore(embeddings)
-    inserted_count = await vector_store.upsert(state.get("chunks", []))
-    logger.info("embed_and_insert: %d chunk(s) written to MongoDB Atlas.", inserted_count)
-    return {"inserted_count": inserted_count}
-
-
-async def _graph_insert(state: IngestionState) -> IngestionState:
-    """Insert chunk nodes and relationships into the graph store (no-op unless enabled)."""
-    graph_store = GraphStore()
-    graph_inserted_count = await graph_store.upsert_chunks(state.get("chunks", []))
-    return {"graph_inserted_count": graph_inserted_count}
-
-
-# ──────────────────────────────────────────────── query nodes
+# ──────────────────────────────────────────────── nodes
 
 async def _embed_query(state: QueryState) -> QueryState:
     """Embed the user question for Atlas $vectorSearch."""
@@ -343,17 +259,6 @@ async def _evaluate(state: QueryState) -> QueryState:
 
 
 # ──────────────────────────────────────────────── public convenience API
-
-async def ingest(
-    input_paths: list[str],
-    chunk_strategy: ChunkStrategy = "recursive",
-) -> IngestionState:
-    """Run the full ingestion pipeline and return the final state."""
-    graph = build_ingestion_graph()
-    return await graph.ainvoke(
-        {"input_paths": input_paths, "chunk_strategy": chunk_strategy}
-    )
-
 
 async def query(
     question: str,

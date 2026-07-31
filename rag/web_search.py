@@ -1,7 +1,7 @@
 """Free web search retrieval leg for RAG augmentation (Tavily).
 
 Runs as a fourth retrieval source alongside semantic/keyword/graph search
-(see graph.py's ``_web_search`` node). Disabled by default via
+(see retrieval.py's ``_web_search`` node). Disabled by default via
 ``RAG_WEB_SEARCH_ENABLED``.
 
 This store does NOT return a fabricated stub when ``TAVILY_API_KEY`` is
@@ -14,8 +14,8 @@ raising, so a flaky web search never fails the whole query.
 Web results are fetched fresh per query (never persisted to the vector
 store) and flow through the same fusion -> parent-expand -> rerank ->
 knee-point -> prompt-injection safety filter pipeline as internal chunks
-before reaching the LLM — see graph.py's ``_safety_filter`` node, which runs
-on the full merged ``selected_chunks`` list regardless of source.
+before reaching the LLM — see retrieval.py's ``_safety_filter`` node, which
+runs on the full merged ``selected_chunks`` list regardless of source.
 """
 from __future__ import annotations
 

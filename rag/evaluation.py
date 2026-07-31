@@ -11,8 +11,11 @@ from .config import settings
 
 class EvaluationMetrics(TypedDict):
     faithfulness: float
-    context_precision: float
+    precision: float
+    recall: float
     answer_relevance: float
+    confidence_score: float
+    confidence_level: str
     evaluator: str
     advanced_notes: str
 
@@ -26,13 +29,20 @@ def evaluate_answer(
     """Compute lightweight RAG quality metrics for a generated answer.
 
     Implementation:
-        The function always computes local lexical metrics. If
-        `ADVANCED_EVAL_PROVIDER` is set to `ragas`, `deepeval`, or `llm`, it also
-        calls `advanced_evaluation_notes` to run or describe the configured
-        production-style evaluator path.
+        The function always computes local lexical metrics — precision (are
+        the retrieved chunks on-topic), recall (does the retrieved context
+        collectively cover the question), faithfulness (is the answer
+        actually supported by that context), and answer relevance — then
+        blends them into one ``confidence_score`` a caller can act on
+        directly without inspecting every sub-metric. If
+        `ADVANCED_EVAL_PROVIDER` is set to `ragas`, `deepeval`, or `llm`, it
+        also calls `advanced_evaluation_notes` to run or describe the
+        configured production-style evaluator path.
 
     Usage:
-        The query graph runs this after citation validation.
+        The query graph runs this after citation validation, and every
+        `POST /v1/query` response returns the result under
+        ``evaluation_metrics`` — no separate call needed.
 
     How it helps other functions:
         These metrics provide immediate feedback on retrieval and generation
@@ -41,13 +51,18 @@ def evaluate_answer(
     """
     context_text = " ".join(chunk.page_content for chunk in chunks)
     faithfulness = _faithfulness(answer, context_text, citation_validation)
-    context_precision = _context_precision(question, chunks)
+    precision = _precision(question, chunks)
+    recall = _recall(question, chunks)
     answer_relevance = _term_overlap(question, answer)
+    confidence_score = _confidence_score(faithfulness, precision, recall, citation_validation)
     advanced_notes = advanced_evaluation_notes(question, answer, chunks)
     return {
         "faithfulness": round(faithfulness, 3),
-        "context_precision": round(context_precision, 3),
+        "precision": round(precision, 3),
+        "recall": round(recall, 3),
         "answer_relevance": round(answer_relevance, 3),
+        "confidence_score": confidence_score,
+        "confidence_level": _confidence_level(confidence_score),
         "evaluator": settings.advanced_eval_provider,
         "advanced_notes": advanced_notes,
     }
@@ -198,26 +213,106 @@ def _faithfulness(answer: str, context_text: str, citation_validation: CitationV
     return (0.6 * citation_score) + (0.4 * overlap_score)
 
 
-def _context_precision(question: str, chunks: list[Document]) -> float:
-    """Estimate how many selected chunks are relevant to the question.
+def _precision(question: str, chunks: list[Document]) -> float:
+    """Estimate what fraction of the selected chunks are relevant to the question.
 
     Implementation:
         The function computes lexical overlap between the question and each
-        selected chunk, then reports the fraction of chunks with non-zero
-        overlap.
+        selected chunk individually, then reports the fraction of chunks with
+        non-zero overlap. This is the classic IR precision definition
+        (relevant retrieved / total retrieved) applied at chunk granularity —
+        it answers "how much of what we retrieved is noise?"
 
     Usage:
         `evaluate_answer` calls this after knee-point selection and safety
         filtering.
 
     How it helps other functions:
-        It gives feedback on retrieval, hybrid fusion, reranking, and knee-point
-        cutoff quality.
+        It gives feedback on retrieval, hybrid fusion, reranking, and
+        knee-point cutoff quality, and feeds `_confidence_score`.
     """
     if not chunks:
         return 0.0
     relevant = sum(1 for chunk in chunks if _term_overlap(question, chunk.page_content) > 0)
     return relevant / len(chunks)
+
+
+def _recall(question: str, chunks: list[Document]) -> float:
+    """Estimate how much of the question's own terms are covered by the
+    retrieved context as a whole.
+
+    Implementation:
+        Unlike `_precision` (per-chunk relevance), this pools every selected
+        chunk's text into one combined context and reports the fraction of
+        the *question's* distinct terms found somewhere in it — the classic
+        IR recall definition (relevant retrieved / total relevant), using the
+        question's own vocabulary as a cheap proxy for "what was needed" in
+        the absence of a ground-truth reference answer. A low score means
+        retrieval didn't surface enough breadth to cover what was asked, even
+        if every individual chunk it did return was on-topic.
+
+    Usage:
+        `evaluate_answer` calls this alongside `_precision`; together they
+        feed `_confidence_score`.
+
+    How it helps other functions:
+        Precision and recall catch different retrieval failures: precision
+        drops when noisy chunks got through fusion/reranking, recall drops
+        when relevant chunks were simply never retrieved at all.
+    """
+    if not chunks:
+        return 0.0
+    combined_context = " ".join(chunk.page_content for chunk in chunks)
+    return _term_overlap(question, combined_context)
+
+
+def _confidence_score(
+    faithfulness: float,
+    precision: float,
+    recall: float,
+    citation_validation: CitationValidation,
+) -> float:
+    """Blend faithfulness, precision, and recall into one actionable score.
+
+    Implementation:
+        A weighted average — faithfulness (0.40) weighs heaviest since a
+        well-retrieved but ungrounded answer is the worse failure mode, then
+        precision (0.35) and recall (0.25). Citation validity is applied as a
+        multiplicative penalty rather than a fourth additive term: unlike the
+        other metrics (all lexical-overlap approximations), citation validity
+        is checked directly against the actual selected chunks, so an answer
+        that cites nothing — or cites a source number that doesn't exist —
+        should never score "confident" regardless of how the approximated
+        metrics look.
+
+    Usage:
+        `evaluate_answer` calls this last, after the three components above
+        are computed, and returns it as ``confidence_score`` alongside a
+        human-readable ``confidence_level`` (see `_confidence_level`) in
+        every `POST /v1/query` response.
+
+    How it helps other functions:
+        Gives a caller one number to threshold on ("only show answers above
+        0.6") instead of having to combine four sub-metrics itself.
+    """
+    base = (0.40 * faithfulness) + (0.35 * precision) + (0.25 * recall)
+    if not citation_validation["valid"]:
+        base *= 0.5
+    return round(min(max(base, 0.0), 1.0), 3)
+
+
+def _confidence_level(confidence_score: float) -> str:
+    """Map a numeric confidence_score to a "high" | "medium" | "low" band.
+
+    Thresholds are deliberately conservative — 0.7 and 0.4 — since every
+    input metric is a lexical-overlap approximation, not a calibrated
+    probability; treat the band as a coarse triage signal, not a guarantee.
+    """
+    if confidence_score >= 0.7:
+        return "high"
+    if confidence_score >= 0.4:
+        return "medium"
+    return "low"
 
 
 def _term_overlap(left: str, right: str) -> float:

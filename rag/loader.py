@@ -12,7 +12,7 @@ from .config import settings
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf"}
 
 
-def load_documents(paths: list[Path]) -> list[Document]:
+def load_documents(paths: list[Path], uploaded_by: str | None = None) -> list[Document]:
     """Parse supported files and return LangChain `Document` objects.
 
     Implementation:
@@ -25,6 +25,14 @@ def load_documents(paths: list[Path]) -> list[Document]:
     Usage:
         The ingestion graph calls this in its `parse_and_load` node. You can pass
         one or more custom file/folder paths from the ingest API or CLI.
+        `uploaded_by` records who triggered this ingestion (an end-user ID
+        supplied by the calling application, or its own principal when the
+        caller doesn't distinguish end-users) — stored as `uploaded_by` on
+        every resulting document's metadata for provenance/auditing. This is
+        distinct from `authorized_users`/`authorized_teams` below, which is an
+        access-control list, not an owner field; it defaults to "*" (public)
+        regardless of who uploaded the document — narrowing visibility to the
+        uploader is a policy decision for later, not made here.
 
     How it helps other functions:
         This is the source of `page_content` and document-level metadata for the
@@ -43,14 +51,16 @@ def load_documents(paths: list[Path]) -> list[Document]:
             if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             if file_path.suffix.lower() == ".pdf":
-                documents.extend(load_pdf_documents(file_path))
+                documents.extend(load_pdf_documents(file_path, uploaded_by=uploaded_by))
             else:
                 text = file_path.read_text(encoding="utf-8")
-                documents.extend(format_text_documents(file_path, text))
+                documents.extend(format_text_documents(file_path, text, uploaded_by=uploaded_by))
     return documents
 
 
-def format_text_documents(path: Path, text: str) -> list[Document]:
+def format_text_documents(
+    path: Path, text: str, uploaded_by: str | None = None
+) -> list[Document]:
     """Create one or more text documents with section-aware metadata.
 
     Implementation:
@@ -69,13 +79,17 @@ def format_text_documents(path: Path, text: str) -> list[Document]:
     """
     if path.suffix.lower() == ".md":
         return [
-            _format_document(path, section_text, section=section)
+            _format_document(path, section_text, section=section, uploaded_by=uploaded_by)
             for section, section_text in _split_markdown_sections(text)
         ]
-    return [_format_document(path, text, section=_extract_title(text) or path.stem)]
+    return [
+        _format_document(
+            path, text, section=_extract_title(text) or path.stem, uploaded_by=uploaded_by
+        )
+    ]
 
 
-def format_document(path: Path, text: str) -> Document:
+def format_document(path: Path, text: str, uploaded_by: str | None = None) -> Document:
     """Create a normalized LangChain `Document` from raw file text.
 
     Implementation:
@@ -95,7 +109,7 @@ def format_document(path: Path, text: str) -> Document:
         metadata filters, parent-child expansion, and displayed in prompts for
         citations.
     """
-    return _format_document(path, text)
+    return _format_document(path, text, uploaded_by=uploaded_by)
 
 
 def _format_document(
@@ -104,6 +118,7 @@ def _format_document(
     section: str | None = None,
     page_number: int | None = None,
     extra_metadata: dict[str, object] | None = None,
+    uploaded_by: str | None = None,
 ) -> Document:
     """Build the final LangChain document object with optional rich metadata.
 
@@ -133,6 +148,9 @@ def _format_document(
         "section": section or title,
         "content_hash": content_hash,
         "loaded_at": datetime.now(UTC).isoformat(),
+        # Provenance — who uploaded/triggered ingestion of this document.
+        # Not an access-control field; see the module docstring above.
+        "uploaded_by": uploaded_by or "",
         "authorized_users": "*",
         "authorized_teams": "*",
     }
@@ -143,7 +161,7 @@ def _format_document(
     return Document(page_content=text.strip(), metadata=metadata)
 
 
-def load_pdf_documents(path: Path) -> list[Document]:
+def load_pdf_documents(path: Path, uploaded_by: str | None = None) -> list[Document]:
     """Parse a PDF into page-level documents with `page_number` metadata.
 
     Implementation:
@@ -163,7 +181,7 @@ def load_pdf_documents(path: Path) -> list[Document]:
         OCR.
     """
     if settings.enable_pdf_layout_extraction:
-        layout_documents = load_pdf_documents_with_layout(path)
+        layout_documents = load_pdf_documents_with_layout(path, uploaded_by=uploaded_by)
         if layout_documents:
             return layout_documents
 
@@ -193,12 +211,15 @@ def load_pdf_documents(path: Path) -> list[Document]:
                     "table_count": 0,
                     "figure_count": 0,
                 },
+                uploaded_by=uploaded_by,
             )
         )
     return documents
 
 
-def load_pdf_documents_with_layout(path: Path) -> list[Document]:
+def load_pdf_documents_with_layout(
+    path: Path, uploaded_by: str | None = None
+) -> list[Document]:
     """Parse PDF pages with layout-aware text, table, and figure metadata.
 
     Implementation:
@@ -252,6 +273,7 @@ def load_pdf_documents_with_layout(path: Path) -> list[Document]:
                         "has_tables": bool(tables),
                         "has_figures": figure_count > 0,
                     },
+                    uploaded_by=uploaded_by,
                 )
             )
     return documents

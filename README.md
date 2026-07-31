@@ -98,13 +98,30 @@ service is meant to be called by any number of applications, not just one
 platform's staff UI. "admin" additionally requires `role=admin` on that
 credential.
 
+### Who uploaded what
+
+`POST /v1/ingest` and `POST /v1/upload` both accept an optional `user_id` —
+the end-user this ingestion is on behalf of (mirrors `QueryRequest.user_id`,
+retrieval's equivalent). It's recorded as `uploaded_by` on every resulting
+chunk's metadata, every parent-context document, and the GridFS file record
+(`GET /v1/files` returns it too) — provenance, not access control. When
+omitted, it defaults to the authenticated caller's own principal (the calling
+*application's* identity, e.g. `portless-backend`) rather than being left
+blank, via `app/dependencies.py::resolve_user_id`.
+
+This is deliberately separate from `authorized_users`/`authorized_teams`
+(rag/loader.py), which still default to `"*"` (public) regardless of who
+uploaded a document — narrowing visibility to the uploader by default is a
+policy decision for later, once there's a concrete requirement for it; today
+this only makes authorship queryable/auditable.
+
 ## Request flow
 
 ```
 POST /v1/query
   → RequestContextMiddleware   (request ID, access log)
   → AuthMiddleware             (API key or JWT → principal + role)
-  → query_controller → query_service → rag.graph.query()
+  → query_controller → query_service → rag.retrieval.query()
       embed_query → semantic_search → keyword_search → graph_search → web_search
       → hybrid_fusion (RRF) → parent_child_expand → rerank → knee_point_select
       → safety_filter (prompt-injection) → augment → generate (→ LLM Gateway)
@@ -150,7 +167,7 @@ Prometheus/Sentry, just:
 | Cross-encoder reranking | off | `RAG_USE_CROSS_ENCODER_RERANKER=true`, else lexical local rerank |
 | Prompt-injection screening | heuristic always on | LLM classifier opt-in via `RAG_USE_LLM_PROMPT_INJECTION_CLASSIFIER=true` |
 | Citation validation | always on | flags missing/invalid `[n]` markers in the generated answer |
-| Answer evaluation | local metrics always on | `RAG_ADVANCED_EVAL_PROVIDER=ragas\|deepeval\|llm` for deeper scoring |
+| Answer evaluation | local metrics always on | faithfulness, precision, recall, answer relevance, blended into `confidence_score` (0-1) + `confidence_level` (high/medium/low) on every query response; `RAG_ADVANCED_EVAL_PROVIDER=ragas\|deepeval\|llm` for deeper scoring |
 | PDF layout extraction (tables/figures) | on | `pdfplumber`, falls back to `pypdf` |
 | PDF OCR | off | `RAG_ENABLE_PDF_OCR=true`, needs system `poppler` + `tesseract` (not in the base image) |
 | Authorization filtering | always on | `authorized_users` / `authorized_teams` metadata, `*` = public |
@@ -177,9 +194,10 @@ rag/                          framework-free RAG core (no FastAPI import)
   security.py                    prompt-injection heuristics + optional LLM classifier
   authorization.py               user/team ACL filtering of retrieval results
   citations.py                   validates [n] citation markers
-  evaluation.py                  local faithfulness/precision/relevance + RAGAS/DeepEval/LLM-judge hooks
+  evaluation.py                  local faithfulness/precision/recall/relevance -> confidence_score + RAGAS/DeepEval/LLM-judge hooks
   llm.py                         prompt construction + generation via the LLM Gateway
-  graph.py                       LangGraph orchestration — ingestion + query pipelines
+  ingestion.py                   LangGraph orchestration — ingestion pipeline only
+  retrieval.py                   LangGraph orchestration — query/retrieval pipeline only
 app/                           thin FastAPI HTTP layer
   main.py                        create_app(), lifespan, middleware/router wiring
   config.py                      KnowledgeServiceSettings — env prefix KNOWLEDGE_
@@ -195,7 +213,18 @@ scripts/
   mint_token.py                  mint a JWT for local testing
   rag_cli.py                     local ingest/ask CLI, no HTTP server needed
 tests/
+  conftest.py                    shared fixtures (hermetic env, TestClient)
+  unit/                          pure logic, no network/Mongo/FastAPI app
+  integration/                   real app/TestClient or real pipeline wiring,
+                                  with only the Mongo/LLM Gateway I/O boundary mocked
 ```
+
+Ingestion and retrieval are deliberately separate modules (`rag/ingestion.py`,
+`rag/retrieval.py`) rather than one `graph.py` — they are independent
+concerns with different scaling and failure characteristics: ingestion is a
+write-heavy background job (see `app/services/ingest_service.py`), retrieval
+is a read-heavy, latency-sensitive request path. Either can move to its own
+worker/process later without the other's dependencies coming along.
 
 ## Configuration
 
