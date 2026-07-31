@@ -1,0 +1,36 @@
+# Secrets — never commit.
+.env
+.env.*
+**/.env
+**/.env.*
+*.env.local
+*.creds
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.deepeval/
+.deepeval_telemetry.txt
+
+# Runtime artefacts
+data/
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

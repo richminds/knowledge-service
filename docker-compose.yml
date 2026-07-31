@@ -1,0 +1,30 @@
+# Local run of the knowledge-service container.
+#
+#   docker compose up --build
+#   curl localhost:8090/health
+#
+# Reads secrets from .env (never committed). Requires:
+#   - RAG_MONGO_URI pointing at a MongoDB Atlas cluster (vector search index
+#     needs Atlas, or an Atlas-compatible deployment with Search support)
+#   - RAG_GATEWAY_BASE_URL pointing at a running LLM Gateway instance — e.g.
+#     http://host.docker.internal:8080 if that service runs on the same host
+#     outside this compose file, or a shared Docker network / service DNS
+#     name if both are deployed together.
+services:
+  knowledge-service:
+    build: .
+    image: knowledge-service:latest
+    container_name: knowledge-service
+    ports:
+      - "${KNOWLEDGE_PORT:-8090}:8090"
+    env_file:
+      - .env
+    environment:
+      KNOWLEDGE_PORT: 8090
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/health/live', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
