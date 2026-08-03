@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../llm-gateway"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "../portless"
+		},
+		{
+			"path": "../auth-service"
+		}
+	],
+	"settings": {}
+}
