@@ -11,6 +11,9 @@
 		},
 		{
 			"path": "../auth-service"
+		},
+		{
+			"path": "../knowledge-ingest-ui"
 		}
 	],
 	"settings": {}
