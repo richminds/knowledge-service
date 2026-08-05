@@ -7,9 +7,6 @@
 			"path": "."
 		},
 		{
-			"path": "../portless"
-		},
-		{
 			"path": "../auth-service"
 		},
 		{
