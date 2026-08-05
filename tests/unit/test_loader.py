@@ -42,3 +42,31 @@ def test_load_documents_threads_uploaded_by_through_txt(tmp_path):
 
     assert len(docs) == 1
     assert docs[0].metadata["uploaded_by"] == "carol"
+
+
+def test_format_document_records_org_id(tmp_path):
+    path = tmp_path / "policy.md"
+    doc = format_document(path, "# Policy\n\nRefunds take five days.", org_id="org-a")
+
+    assert doc.metadata["org_id"] == "org-a"
+
+
+def test_format_document_defaults_org_id_to_unscoped(tmp_path):
+    path = tmp_path / "policy.md"
+    doc = format_document(path, "# Policy\n\nRefunds take five days.")
+
+    # "*" — unscoped/visible to every org, matching pre-org_id behavior.
+    assert doc.metadata["org_id"] == "*"
+
+
+def test_load_documents_threads_org_id_through_markdown_sections(tmp_path):
+    doc_path = tmp_path / "policy.md"
+    doc_path.write_text(
+        "# Refund Policy\n\nRefunds take five days.\n\n## Exceptions\n\nFinal sale excluded.\n",
+        encoding="utf-8",
+    )
+
+    docs = load_documents([Path(doc_path)], org_id="org-a")
+
+    assert len(docs) >= 2
+    assert all(d.metadata["org_id"] == "org-a" for d in docs)

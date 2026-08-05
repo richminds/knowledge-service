@@ -150,3 +150,26 @@ async def test_ingest_pipeline_defaults_uploaded_by_to_empty_string(
 
     assert fake_ingestion_backends["chunks"]
     assert all(c.metadata["uploaded_by"] == "" for c in fake_ingestion_backends["chunks"])
+
+
+async def test_ingest_pipeline_records_org_id_on_chunks(tmp_path, fake_ingestion_backends):
+    doc_path = tmp_path / "policy.md"
+    doc_path.write_text(
+        "# Refund Policy\n\nRefunds are issued within five business days.\n",
+        encoding="utf-8",
+    )
+
+    await ingest(input_paths=[str(doc_path)], chunk_strategy="recursive", org_id="org-a")
+
+    assert fake_ingestion_backends["chunks"]
+    assert all(c.metadata["org_id"] == "org-a" for c in fake_ingestion_backends["chunks"])
+
+
+async def test_ingest_pipeline_defaults_org_id_to_unscoped(tmp_path, fake_ingestion_backends):
+    doc_path = tmp_path / "policy.md"
+    doc_path.write_text("# Refund Policy\n\nRefunds take five days.\n", encoding="utf-8")
+
+    await ingest(input_paths=[str(doc_path)])
+
+    assert fake_ingestion_backends["chunks"]
+    assert all(c.metadata["org_id"] == "*" for c in fake_ingestion_backends["chunks"])

@@ -25,6 +25,16 @@ class IngestRequest(BaseModel):
             "when omitted — mirrors QueryRequest.user_id, the retrieval-side equivalent."
         ),
     )
+    org_id: str | None = Field(
+        default=None,
+        description=(
+            "Organization this ingestion is scoped to, recorded as `org_id` on every "
+            "resulting chunk's metadata. Unlike user_id, this IS an access-control field — "
+            "at query time, a chunk tagged with a real org_id is only returned to queries "
+            "from that same org_id (see QueryRequest.org_id). Omit to leave chunks unscoped "
+            "('*', visible to every org, matching today's default)."
+        ),
+    )
 
 
 class IngestResponse(BaseModel):

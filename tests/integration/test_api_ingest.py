@@ -18,12 +18,13 @@ import pytest
 def mock_ingest(monkeypatch):
     calls: list[dict] = []
 
-    async def _fake(input_paths, chunk_strategy="recursive", uploaded_by=None):
+    async def _fake(input_paths, chunk_strategy="recursive", uploaded_by=None, org_id=None):
         calls.append(
             {
                 "input_paths": input_paths,
                 "chunk_strategy": chunk_strategy,
                 "uploaded_by": uploaded_by,
+                "org_id": org_id,
             }
         )
         return {"inserted_count": 3, "graph_inserted_count": 0}
@@ -94,3 +95,27 @@ def test_upload_falls_back_to_principal_when_no_user_id(api, mock_ingest, mock_f
 def test_job_status_404_for_unknown_job(api):
     resp = api.get("/v1/ingest/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_ingest_records_explicit_org_id(api, mock_ingest):
+    resp = api.post(
+        "/v1/ingest", json={"input_paths": ["/data/doc.md"], "org_id": "org-a"}
+    )
+    assert resp.status_code == 202
+    assert mock_ingest[0]["org_id"] == "org-a"
+
+
+def test_ingest_defaults_org_id_to_empty_string_when_omitted(api, mock_ingest):
+    resp = api.post("/v1/ingest", json={"input_paths": ["/data/doc.md"]})
+    assert resp.status_code == 202
+    assert mock_ingest[0]["org_id"] == ""
+
+
+def test_upload_records_explicit_org_id(api, mock_ingest, mock_file_store):
+    resp = api.post(
+        "/v1/upload",
+        files={"files": ("policy.md", b"# Policy\n\nRefunds take five days.", "text/markdown")},
+        data={"chunk_strategy": "recursive", "org_id": "org-a"},
+    )
+    assert resp.status_code == 202
+    assert mock_ingest[0]["org_id"] == "org-a"

@@ -46,6 +46,7 @@ class QueryState(TypedDict, total=False):
     metadata_filter: dict[str, Any]
     user_id: str
     team_id: str
+    org_id: str
     query_embedding: list[float]
     semantic_results: list[ScoredDocument]
     keyword_results: list[ScoredDocument]
@@ -119,6 +120,7 @@ async def _semantic_search(state: QueryState) -> QueryState:
             results,
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
+            org_id=state.get("org_id"),
         )
     }
 
@@ -136,6 +138,7 @@ async def _keyword_search(state: QueryState) -> QueryState:
             results,
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
+            org_id=state.get("org_id"),
         )
     }
 
@@ -152,6 +155,7 @@ async def _graph_search(state: QueryState) -> QueryState:
             results,
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
+            org_id=state.get("org_id"),
         )
     }
 
@@ -171,6 +175,7 @@ async def _web_search(state: QueryState) -> QueryState:
             results,
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
+            org_id=state.get("org_id"),
         )
     }
 
@@ -265,6 +270,7 @@ async def query(
     metadata_filter: dict[str, Any] | None = None,
     user_id: str | None = None,
     team_id: str | None = None,
+    org_id: str | None = None,
 ) -> QueryState:
     """Run the full query pipeline and return the final state."""
     graph = build_query_graph()
@@ -273,5 +279,6 @@ async def query(
         "metadata_filter": metadata_filter or {},
         "user_id": user_id or "",
         "team_id": team_id or "",
+        "org_id": org_id or "",
     }
     return await graph.ainvoke(initial)

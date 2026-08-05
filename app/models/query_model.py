@@ -16,6 +16,15 @@ class QueryRequest(BaseModel):
     )
     user_id: str | None = Field(default=None, description="Applies authorized_users filtering.")
     team_id: str | None = Field(default=None, description="Applies authorized_teams filtering.")
+    org_id: str | None = Field(
+        default=None,
+        description=(
+            "Restricts results to chunks tagged with this org_id at ingest time; "
+            "unscoped ('*') chunks are always included. This is a hard tenant boundary, "
+            "not an OR-list like user_id/team_id — a chunk tagged with a different org_id "
+            "is never returned, regardless of user_id/team_id."
+        ),
+    )
 
 
 class QueryResponse(BaseModel):

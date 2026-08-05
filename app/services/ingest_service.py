@@ -46,7 +46,10 @@ def _new_job() -> str:
 
 
 async def start_ingest(
-    request: IngestRequest, background_tasks: BackgroundTasks, uploaded_by: str = ""
+    request: IngestRequest,
+    background_tasks: BackgroundTasks,
+    uploaded_by: str = "",
+    org_id: str = "",
 ) -> IngestResponse:
     """Submit an ingestion job for server-side paths. Returns immediately with a job_id to poll."""
     job_id = _new_job()
@@ -56,6 +59,7 @@ async def start_ingest(
         input_paths=request.input_paths,
         chunk_strategy=request.chunk_strategy,
         uploaded_by=uploaded_by,
+        org_id=org_id,
     )
     return IngestResponse(
         job_id=job_id,
@@ -69,6 +73,7 @@ async def upload_and_ingest(
     chunk_strategy: str,
     background_tasks: BackgroundTasks,
     uploaded_by: str = "",
+    org_id: str = "",
 ) -> IngestResponse:
     """Accept uploads, persist the bytes durably (GridFS), then ingest.
 
@@ -119,6 +124,7 @@ async def upload_and_ingest(
                     "origin": "upload",
                     "chunk_strategy": chunk_strategy,
                     "uploaded_by": uploaded_by,
+                    "org_id": org_id,
                 },
             )
             persisted += 1
@@ -147,6 +153,7 @@ async def upload_and_ingest(
         input_paths=saved_paths,
         chunk_strategy=chunk_strategy,
         uploaded_by=uploaded_by,
+        org_id=org_id,
     )
     return IngestResponse(
         job_id=job_id,
@@ -168,13 +175,20 @@ def get_job_status(job_id: str) -> JobStatusResponse:
 
 
 async def _run_ingest_job(
-    job_id: str, input_paths: list[str], chunk_strategy: str, uploaded_by: str = ""
+    job_id: str,
+    input_paths: list[str],
+    chunk_strategy: str,
+    uploaded_by: str = "",
+    org_id: str = "",
 ) -> None:
     """Execute ingestion in the background and update the job registry."""
     _jobs[job_id]["status"] = "running"
     try:
         result = await ingest(
-            input_paths=input_paths, chunk_strategy=chunk_strategy, uploaded_by=uploaded_by
+            input_paths=input_paths,
+            chunk_strategy=chunk_strategy,
+            uploaded_by=uploaded_by,
+            org_id=org_id,
         )  # type: ignore[arg-type]
         _jobs[job_id].update(
             {

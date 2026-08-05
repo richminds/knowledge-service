@@ -31,11 +31,14 @@ async def start_ingest(
     principal: str = Depends(get_principal),
 ) -> IngestResponse:
     user_id = resolve_user_id(body.user_id, principal)
+    org_id = (body.org_id or "").strip()
     logger.info(
-        "Ingest requested by %s (user_id=%s): %d path(s)",
-        principal, user_id, len(body.input_paths),
+        "Ingest requested by %s (user_id=%s, org_id=%s): %d path(s)",
+        principal, user_id, org_id or "*", len(body.input_paths),
     )
-    return await ingest_service.start_ingest(body, background_tasks, uploaded_by=user_id)
+    return await ingest_service.start_ingest(
+        body, background_tasks, uploaded_by=user_id, org_id=org_id
+    )
 
 
 @router.post(
@@ -52,15 +55,24 @@ async def upload_and_ingest(
         default=None,
         description="End-user this upload is on behalf of; defaults to the authenticated caller.",
     ),
+    org_id: str | None = Form(
+        default=None,
+        description=(
+            "Organization this upload is scoped to; chunks are tagged with it and only "
+            "returned to queries from the same org_id (see QueryRequest.org_id). Omit to "
+            "leave chunks unscoped ('*', visible to every org)."
+        ),
+    ),
     principal: str = Depends(get_principal),
 ) -> IngestResponse:
     resolved_user_id = resolve_user_id(user_id, principal)
+    resolved_org_id = (org_id or "").strip()
     logger.info(
-        "Upload requested by %s (user_id=%s): %d file(s)",
-        principal, resolved_user_id, len(files),
+        "Upload requested by %s (user_id=%s, org_id=%s): %d file(s)",
+        principal, resolved_user_id, resolved_org_id or "*", len(files),
     )
     return await ingest_service.upload_and_ingest(
-        files, chunk_strategy, background_tasks, uploaded_by=resolved_user_id
+        files, chunk_strategy, background_tasks, uploaded_by=resolved_user_id, org_id=resolved_org_id
     )
 
 

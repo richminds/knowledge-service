@@ -9,14 +9,20 @@ def filter_authorized_results(
     results: list[ScoredDocument],
     user_id: str | None = None,
     team_id: str | None = None,
+    org_id: str | None = None,
 ) -> list[ScoredDocument]:
-    """Filter retrieved documents by user and team authorization metadata.
+    """Filter retrieved documents by org, user, and team authorization metadata.
 
     Implementation:
-        The function keeps public documents marked with `*`, documents that list
-        the requested `user_id` in `authorized_users`, or documents that list the
-        requested `team_id` in `authorized_teams`. Metadata values can be a comma
-        separated string or a list.
+        The function first enforces the `org_id` tenant boundary (a document
+        tagged with a real org_id is only visible to a query from that same
+        org_id; untagged/`*` documents are visible to everyone) — see
+        `is_authorized_document` for why this is a hard gate rather than
+        folded into the user/team check below it. Within that boundary, it
+        keeps public documents marked with `*`, documents that list the
+        requested `user_id` in `authorized_users`, or documents that list the
+        requested `team_id` in `authorized_teams`. Metadata values can be a
+        comma separated string or a list.
 
     Usage:
         The query graph applies this after semantic and keyword retrieval.
@@ -28,18 +34,30 @@ def filter_authorized_results(
     return [
         result
         for result in results
-        if is_authorized_document(result.document, user_id=user_id, team_id=team_id)
+        if is_authorized_document(
+            result.document, user_id=user_id, team_id=team_id, org_id=org_id
+        )
     ]
 
 
 def is_authorized_document(
-    document: Document, user_id: str | None = None, team_id: str | None = None
+    document: Document,
+    user_id: str | None = None,
+    team_id: str | None = None,
+    org_id: str | None = None,
 ) -> bool:
-    """Check whether one document is visible to a user or team.
+    """Check whether one document is visible to a user, team, and org.
 
     Implementation:
-        The function reads `authorized_users` and `authorized_teams` from
-        metadata, normalizes them into sets, and treats `*` as public access.
+        `org_id` is a hard AND gate, checked first and independently of
+        everything else: a document tagged with a specific org_id (not `*`)
+        is only visible to a caller supplying that same org_id, full stop —
+        this is what makes org_id an actual tenant-isolation boundary rather
+        than another entry in the permissive user/team OR-list below it (an
+        OR would let any matching user_id/team_id see across organizations,
+        defeating the isolation). Once past that gate, the function reads
+        `authorized_users` and `authorized_teams` from metadata, normalizes
+        them into sets, and treats `*` as public access within the org.
 
     Usage:
         `filter_authorized_results` calls this for every retrieved result.
@@ -49,6 +67,10 @@ def is_authorized_document(
         RBAC/ABAC checks later, or to have a calling application own its own
         authorization model on top of this default.
     """
+    doc_org = str(document.metadata.get("org_id") or "*")
+    if doc_org != "*" and doc_org != org_id:
+        return False
+
     users = _metadata_values(document.metadata.get("authorized_users", "*"))
     teams = _metadata_values(document.metadata.get("authorized_teams", "*"))
     return (

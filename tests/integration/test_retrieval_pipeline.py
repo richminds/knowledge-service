@@ -145,3 +145,22 @@ async def test_query_pipeline_authorization_filters_private_chunks(monkeypatch):
     selected_ids = {c.metadata["chunk_id"] for c in result["selected_chunks"]}
     assert "priv1" not in selected_ids
     assert "pub1" in selected_ids
+
+
+async def test_query_pipeline_org_id_isolates_tenants(monkeypatch):
+    org_a_chunk = _chunk("org-a-1", "Org A's internal roadmap notes.", 0.99, org_id="org-a")
+    org_b_chunk = _chunk("org-b-1", "Org B's internal roadmap notes.", 0.9, org_id="org-b")
+    public_chunk = _chunk("pub1", "Refunds are issued within five business days.", 0.5)
+    _patch_common(
+        monkeypatch,
+        semantic_results=[org_a_chunk, org_b_chunk, public_chunk],
+        keyword_results=[],
+        answer="Refunds take five business days. [1]",
+    )
+
+    result = await query(question="What's in the roadmap?", org_id="org-a")
+
+    selected_ids = {c.metadata["chunk_id"] for c in result["selected_chunks"]}
+    assert "org-a-1" in selected_ids
+    assert "pub1" in selected_ids
+    assert "org-b-1" not in selected_ids

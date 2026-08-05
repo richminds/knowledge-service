@@ -21,6 +21,7 @@ async def run_query(request: QueryRequest) -> QueryResponse:
             metadata_filter=request.metadata_filter,
             user_id=request.user_id,
             team_id=request.team_id,
+            org_id=request.org_id,
         )
     except GatewayError:
         # Let app/errors.py map this to the LLM Gateway's own status code

@@ -42,6 +42,10 @@ class IngestionState(TypedDict, total=False):
     # for provenance; it does not affect the "*" (public) authorization
     # default set at the same time.
     uploaded_by: str
+    # Organization this ingestion is scoped to. Unlike uploaded_by, this IS
+    # an access-control field — recorded as `metadata["org_id"]` and enforced
+    # as a hard tenant boundary at query time (see rag/authorization.py).
+    org_id: str
     raw_documents: list[Document]
     chunks: list[Document]
     inserted_count: int
@@ -69,7 +73,11 @@ async def _parse_and_load(state: IngestionState) -> IngestionState:
     """Load raw files from input_paths into LangChain Documents."""
     raw_paths = state.get("input_paths") or []
     paths = [Path(p) for p in raw_paths] if raw_paths else []
-    raw_documents = load_documents(paths, uploaded_by=state.get("uploaded_by") or None)
+    raw_documents = load_documents(
+        paths,
+        uploaded_by=state.get("uploaded_by") or None,
+        org_id=state.get("org_id") or None,
+    )
     logger.info("parse_and_load: loaded %d document(s).", len(raw_documents))
     return {"raw_documents": raw_documents}
 
@@ -120,6 +128,7 @@ async def ingest(
     input_paths: list[str],
     chunk_strategy: ChunkStrategy = "recursive",
     uploaded_by: str | None = None,
+    org_id: str | None = None,
 ) -> IngestionState:
     """Run the full ingestion pipeline and return the final state."""
     graph = build_ingestion_graph()
@@ -128,5 +137,6 @@ async def ingest(
             "input_paths": input_paths,
             "chunk_strategy": chunk_strategy,
             "uploaded_by": uploaded_by or "",
+            "org_id": org_id or "",
         }
     )

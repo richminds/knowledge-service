@@ -12,7 +12,9 @@ from .config import settings
 SUPPORTED_EXTENSIONS = {".md", ".txt", ".pdf"}
 
 
-def load_documents(paths: list[Path], uploaded_by: str | None = None) -> list[Document]:
+def load_documents(
+    paths: list[Path], uploaded_by: str | None = None, org_id: str | None = None
+) -> list[Document]:
     """Parse supported files and return LangChain `Document` objects.
 
     Implementation:
@@ -34,6 +36,12 @@ def load_documents(paths: list[Path], uploaded_by: str | None = None) -> list[Do
         regardless of who uploaded the document — narrowing visibility to the
         uploader is a policy decision for later, not made here.
 
+        `org_id`, unlike `uploaded_by`, IS an access-control field: it's
+        stored as `metadata["org_id"]` (default "*", i.e. unscoped/visible to
+        everyone) and enforced as a hard tenant boundary at query time — see
+        `rag/authorization.py::is_authorized_document`. A chunk ingested with
+        a real `org_id` is only ever returned to queries from that same org.
+
     How it helps other functions:
         This is the source of `page_content` and document-level metadata for the
         whole pipeline. Chunking, vector insertion, retrieval citations, page
@@ -51,15 +59,19 @@ def load_documents(paths: list[Path], uploaded_by: str | None = None) -> list[Do
             if file_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
                 continue
             if file_path.suffix.lower() == ".pdf":
-                documents.extend(load_pdf_documents(file_path, uploaded_by=uploaded_by))
+                documents.extend(
+                    load_pdf_documents(file_path, uploaded_by=uploaded_by, org_id=org_id)
+                )
             else:
                 text = file_path.read_text(encoding="utf-8")
-                documents.extend(format_text_documents(file_path, text, uploaded_by=uploaded_by))
+                documents.extend(
+                    format_text_documents(file_path, text, uploaded_by=uploaded_by, org_id=org_id)
+                )
     return documents
 
 
 def format_text_documents(
-    path: Path, text: str, uploaded_by: str | None = None
+    path: Path, text: str, uploaded_by: str | None = None, org_id: str | None = None
 ) -> list[Document]:
     """Create one or more text documents with section-aware metadata.
 
@@ -79,17 +91,25 @@ def format_text_documents(
     """
     if path.suffix.lower() == ".md":
         return [
-            _format_document(path, section_text, section=section, uploaded_by=uploaded_by)
+            _format_document(
+                path, section_text, section=section, uploaded_by=uploaded_by, org_id=org_id
+            )
             for section, section_text in _split_markdown_sections(text)
         ]
     return [
         _format_document(
-            path, text, section=_extract_title(text) or path.stem, uploaded_by=uploaded_by
+            path,
+            text,
+            section=_extract_title(text) or path.stem,
+            uploaded_by=uploaded_by,
+            org_id=org_id,
         )
     ]
 
 
-def format_document(path: Path, text: str, uploaded_by: str | None = None) -> Document:
+def format_document(
+    path: Path, text: str, uploaded_by: str | None = None, org_id: str | None = None
+) -> Document:
     """Create a normalized LangChain `Document` from raw file text.
 
     Implementation:
@@ -109,7 +129,7 @@ def format_document(path: Path, text: str, uploaded_by: str | None = None) -> Do
         metadata filters, parent-child expansion, and displayed in prompts for
         citations.
     """
-    return _format_document(path, text, uploaded_by=uploaded_by)
+    return _format_document(path, text, uploaded_by=uploaded_by, org_id=org_id)
 
 
 def _format_document(
@@ -119,6 +139,7 @@ def _format_document(
     page_number: int | None = None,
     extra_metadata: dict[str, object] | None = None,
     uploaded_by: str | None = None,
+    org_id: str | None = None,
 ) -> Document:
     """Build the final LangChain document object with optional rich metadata.
 
@@ -151,6 +172,9 @@ def _format_document(
         # Provenance — who uploaded/triggered ingestion of this document.
         # Not an access-control field; see the module docstring above.
         "uploaded_by": uploaded_by or "",
+        # Tenant boundary — enforced (unlike uploaded_by) at query time by
+        # rag/authorization.py. "*" means unscoped/visible to every org.
+        "org_id": org_id or "*",
         "authorized_users": "*",
         "authorized_teams": "*",
     }
@@ -161,7 +185,9 @@ def _format_document(
     return Document(page_content=text.strip(), metadata=metadata)
 
 
-def load_pdf_documents(path: Path, uploaded_by: str | None = None) -> list[Document]:
+def load_pdf_documents(
+    path: Path, uploaded_by: str | None = None, org_id: str | None = None
+) -> list[Document]:
     """Parse a PDF into page-level documents with `page_number` metadata.
 
     Implementation:
@@ -181,7 +207,9 @@ def load_pdf_documents(path: Path, uploaded_by: str | None = None) -> list[Docum
         OCR.
     """
     if settings.enable_pdf_layout_extraction:
-        layout_documents = load_pdf_documents_with_layout(path, uploaded_by=uploaded_by)
+        layout_documents = load_pdf_documents_with_layout(
+            path, uploaded_by=uploaded_by, org_id=org_id
+        )
         if layout_documents:
             return layout_documents
 
@@ -212,13 +240,14 @@ def load_pdf_documents(path: Path, uploaded_by: str | None = None) -> list[Docum
                     "figure_count": 0,
                 },
                 uploaded_by=uploaded_by,
+                org_id=org_id,
             )
         )
     return documents
 
 
 def load_pdf_documents_with_layout(
-    path: Path, uploaded_by: str | None = None
+    path: Path, uploaded_by: str | None = None, org_id: str | None = None
 ) -> list[Document]:
     """Parse PDF pages with layout-aware text, table, and figure metadata.
 
@@ -274,6 +303,7 @@ def load_pdf_documents_with_layout(
                         "has_figures": figure_count > 0,
                     },
                     uploaded_by=uploaded_by,
+                    org_id=org_id,
                 )
             )
     return documents
