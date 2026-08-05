@@ -38,17 +38,27 @@ class _FakeFileStore:
 
     backend = "fake"
 
+    def __init__(self) -> None:
+        self.save_calls: list[dict] = []
+
     async def save(self, filename, data, content_type=None, metadata=None):
         from rag.file_store import StoredFile
 
+        self.save_calls.append({"filename": filename, "metadata": metadata or {}})
         return StoredFile(
-            file_id="fake-id", filename=filename, size=len(data), backend=self.backend
+            file_id="fake-id",
+            filename=filename,
+            size=len(data),
+            backend=self.backend,
+            org_id=(metadata or {}).get("org_id") or None,
         )
 
 
 @pytest.fixture()
 def mock_file_store(monkeypatch):
-    monkeypatch.setattr("app.services.ingest_service.get_file_store", lambda: _FakeFileStore())
+    store = _FakeFileStore()
+    monkeypatch.setattr("app.services.ingest_service.get_file_store", lambda: store)
+    return store
 
 
 def test_ingest_records_explicit_user_id(api, mock_ingest):
@@ -119,3 +129,6 @@ def test_upload_records_explicit_org_id(api, mock_ingest, mock_file_store):
     )
     assert resp.status_code == 202
     assert mock_ingest[0]["org_id"] == "org-a"
+    # The persisted file's own metadata (read back by GET /v1/files) carries
+    # org_id too, not just the ingestion pipeline call.
+    assert mock_file_store.save_calls[0]["metadata"]["org_id"] == "org-a"

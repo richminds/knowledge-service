@@ -39,6 +39,11 @@ class StoredFile(BaseModel):
     # `uploaded_by` document metadata for the same concept applied to
     # ingested chunks) — provenance only, not an access-control field.
     uploaded_by: str | None = None
+    # Organization this file is scoped to — unlike uploaded_by, this IS an
+    # access-control field, enforced by list()'s org_id filter the same way
+    # rag/authorization.py enforces it for chunks. None/"*" means unscoped
+    # (visible to every org).
+    org_id: str | None = None
 
 
 @runtime_checkable
@@ -59,7 +64,7 @@ class FileStore(Protocol):
 
     async def delete(self, file_id: str) -> bool: ...
 
-    async def list(self, limit: int = 100) -> list[StoredFile]: ...
+    async def list(self, limit: int = 100, org_id: str | None = None) -> list[StoredFile]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +114,7 @@ class MongoGridFSFileStore:
             backend=self.backend,
             content_type=content_type,
             uploaded_by=meta.get("uploaded_by") or None,
+            org_id=meta.get("org_id") or None,
         )
 
     async def read(self, file_id: str) -> bytes:
@@ -129,12 +135,29 @@ class MongoGridFSFileStore:
             logger.warning("FileStore(mongodb): delete %s failed: %s", file_id, exc)
             return False
 
-    async def list(self, limit: int = 100) -> list[StoredFile]:
+    async def list(self, limit: int = 100, org_id: str | None = None) -> list[StoredFile]:
+        """List persisted files, newest first.
+
+        ``org_id`` mirrors the chunk-level tenant boundary in
+        rag/authorization.py: when given, only files tagged with that org_id
+        (or left unscoped — absent metadata, or "*") are returned. When
+        omitted, only unscoped files are returned — same fail-closed default
+        as query-time chunk filtering, so a caller with no org context can't
+        see any specific org's files.
+        """
         from .mongo_connection import get_connection
 
         conn = await get_connection(uri=settings.mongo_uri, db_name=settings.mongo_db_name)
         files_col = conn.get_collection(f"{self._bucket_name}.files")
-        cursor = files_col.find({}, sort=[("uploadDate", -1)], limit=limit)
+
+        unscoped = {"metadata.org_id": {"$exists": False}}
+        unscoped_or_wildcard = {"$or": [unscoped, {"metadata.org_id": "*"}]}
+        if org_id:
+            mongo_filter = {"$or": [unscoped, {"metadata.org_id": {"$in": ["*", org_id]}}]}
+        else:
+            mongo_filter = unscoped_or_wildcard
+
+        cursor = files_col.find(mongo_filter, sort=[("uploadDate", -1)], limit=limit)
         out: list[StoredFile] = []
         async for doc in cursor:
             meta = doc.get("metadata") or {}
@@ -148,6 +171,7 @@ class MongoGridFSFileStore:
                     content_type=meta.get("content_type"),
                     uploaded_at=upload_date.isoformat() if upload_date else None,
                     uploaded_by=meta.get("uploaded_by") or None,
+                    org_id=meta.get("org_id") or None,
                 )
             )
         return out

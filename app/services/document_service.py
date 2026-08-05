@@ -36,10 +36,14 @@ async def delete_document(source: str) -> DeleteResponse:
     )
 
 
-async def list_files(limit: int) -> FilesListResponse:
-    """Return files persisted in the configured file store (default: GridFS)."""
+async def list_files(limit: int, org_id: str | None = None) -> FilesListResponse:
+    """Return files persisted in the configured file store (default: GridFS).
+
+    ``org_id`` scopes the list to that org's files (plus unscoped ones) —
+    see FileStore.list()/rag/file_store.py for the filtering rule.
+    """
     store = get_file_store()
-    files = await store.list(limit=limit)
+    files = await store.list(limit=limit, org_id=org_id)
     return FilesListResponse(
         backend=store.backend,
         count=len(files),

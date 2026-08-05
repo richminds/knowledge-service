@@ -33,5 +33,12 @@ async def delete_document(source: str, principal: str = Depends(get_principal)) 
     response_model=FilesListResponse,
     summary="List persisted uploaded files",
 )
-async def list_files(limit: int = 100, _: str = Depends(get_principal)) -> FilesListResponse:
-    return await document_service.list_files(limit=limit)
+async def list_files(
+    limit: int = 100,
+    org_id: str | None = None,
+    _: str = Depends(get_principal),
+) -> FilesListResponse:
+    """List persisted files. ``org_id`` scopes the list to that org (plus
+    unscoped files); omit it to see only unscoped files — same fail-closed
+    default as query-time chunk filtering (see rag/authorization.py)."""
+    return await document_service.list_files(limit=limit, org_id=org_id)
