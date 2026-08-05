@@ -12,6 +12,7 @@ already run to completion — no polling loop needed.
 from __future__ import annotations
 
 import pytest
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture()
@@ -132,3 +133,61 @@ def test_upload_records_explicit_org_id(api, mock_ingest, mock_file_store):
     # The persisted file's own metadata (read back by GET /v1/files) carries
     # org_id too, not just the ingestion pipeline call.
     assert mock_file_store.save_calls[0]["metadata"]["org_id"] == "org-a"
+
+
+# ── JWT-authenticated caller: org_id is the token's claim, not the body's ──
+# (app/dependencies.py::resolve_org_id) — this is the tenant-isolation fix.
+
+
+def _jwt_client(monkeypatch, secret: str = "test-secret") -> TestClient:
+    import rag.config as rag_config_mod
+
+    monkeypatch.setattr(rag_config_mod.settings, "auth_enabled", True)
+    monkeypatch.setattr(rag_config_mod.settings, "jwt_secret", secret)
+
+    from app.main import create_app
+
+    return TestClient(create_app())
+
+
+def _mint_token(secret: str = "test-secret", **extra_claims: str) -> str:
+    from rag.auth import JWTValidator
+
+    return JWTValidator(secret=secret).create_token(subject="USR-1", **extra_claims)
+
+
+def test_ingest_jwt_derives_org_id_and_user_id_from_token(monkeypatch, mock_ingest):
+    with _jwt_client(monkeypatch) as client:
+        token = _mint_token(org_id="org-a")
+        resp = client.post(
+            "/v1/ingest",
+            json={"input_paths": ["/data/doc.md"]},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 202
+        assert mock_ingest[0]["org_id"] == "org-a"
+        assert mock_ingest[0]["uploaded_by"] == "USR-1"
+
+
+def test_ingest_jwt_rejects_org_id_that_does_not_match_token(monkeypatch, mock_ingest):
+    with _jwt_client(monkeypatch) as client:
+        token = _mint_token(org_id="org-a")
+        resp = client.post(
+            "/v1/ingest",
+            json={"input_paths": ["/data/doc.md"], "org_id": "org-b"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+        assert mock_ingest == []  # never reached the pipeline
+
+
+def test_ingest_jwt_rejects_user_id_that_does_not_match_token(monkeypatch, mock_ingest):
+    with _jwt_client(monkeypatch) as client:
+        token = _mint_token(org_id="org-a")
+        resp = client.post(
+            "/v1/ingest",
+            json={"input_paths": ["/data/doc.md"], "user_id": "someone-else"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert resp.status_code == 403
+        assert mock_ingest == []

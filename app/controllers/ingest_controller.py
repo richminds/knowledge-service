@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 
-from ..dependencies import get_principal, resolve_user_id
+from ..dependencies import get_principal, resolve_org_id, resolve_user_id
 from ..models.ingest_model import IngestRequest, IngestResponse, JobStatusResponse
 from ..services import ingest_service
 
@@ -28,10 +28,11 @@ router = APIRouter(prefix="/v1", tags=["ingest"])
 async def start_ingest(
     body: IngestRequest,
     background_tasks: BackgroundTasks,
+    request: Request,
     principal: str = Depends(get_principal),
 ) -> IngestResponse:
-    user_id = resolve_user_id(body.user_id, principal)
-    org_id = (body.org_id or "").strip()
+    user_id = resolve_user_id(body.user_id, request)
+    org_id = resolve_org_id(body.org_id, request)
     logger.info(
         "Ingest requested by %s (user_id=%s, org_id=%s): %d path(s)",
         principal, user_id, org_id or "*", len(body.input_paths),
@@ -49,6 +50,7 @@ async def start_ingest(
 )
 async def upload_and_ingest(
     background_tasks: BackgroundTasks,
+    request: Request,
     files: list[UploadFile] = File(..., description="Knowledge files to ingest."),
     chunk_strategy: str = Form("recursive"),
     user_id: str | None = Form(
@@ -65,8 +67,8 @@ async def upload_and_ingest(
     ),
     principal: str = Depends(get_principal),
 ) -> IngestResponse:
-    resolved_user_id = resolve_user_id(user_id, principal)
-    resolved_org_id = (org_id or "").strip()
+    resolved_user_id = resolve_user_id(user_id, request)
+    resolved_org_id = resolve_org_id(org_id, request)
     logger.info(
         "Upload requested by %s (user_id=%s, org_id=%s): %d file(s)",
         principal, resolved_user_id, resolved_org_id or "*", len(files),

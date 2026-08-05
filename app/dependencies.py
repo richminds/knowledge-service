@@ -45,13 +45,51 @@ def require_admin(role: str = Depends(get_role)) -> str:
     return role
 
 
-def resolve_user_id(requested: str | None, principal: str = Depends(get_principal)) -> str:
-    """Explicit end-user ID wins; otherwise fall back to the authenticated principal.
+def resolve_user_id(requested: str | None, request: Request) -> str:
+    """Resolve the end-user identity for this request.
 
-    Used on ingestion routes to resolve who a document upload is recorded as
-    ``uploaded_by`` (see rag/loader.py) — mirrors the LLM Gateway's
-    ``resolve_caller`` pattern. A calling application acting on behalf of many
-    end-users (e.g. Portless) should pass its own end-user's ID explicitly;
-    a caller with no such concept just gets its own principal recorded.
+    For a JWT-authenticated end user, identity is exactly the verified
+    token's ``sub`` — a request body/form cannot claim to be a different
+    user; a mismatching ``user_id`` is rejected rather than silently
+    overridden (a match, e.g. a client echoing back what it already knows, is
+    a no-op). For a trusted service-to-service caller (static API key, or
+    auth disabled entirely) the caller may assert an end-user ID explicitly —
+    a calling application acting on behalf of many end-users (e.g. Portless)
+    passes its own end-user's ID this way; a caller with no such concept just
+    gets its own principal recorded. Mirrors ``resolve_org_id`` below.
     """
-    return (requested or "").strip() or principal
+    principal = getattr(request.state, "principal", "anonymous")
+    requested = (requested or "").strip()
+    if getattr(request.state, "auth_method", None) == "jwt":
+        if requested and requested != principal:
+            raise HTTPException(
+                status_code=403,
+                detail="user_id does not match the authenticated token's subject.",
+            )
+        return principal
+    return requested or principal
+
+
+def resolve_org_id(requested: str | None, request: Request) -> str:
+    """Resolve the tenant (org) for this request — the hard isolation boundary
+    enforced in rag/authorization.py.
+
+    For a JWT-authenticated end user, org_id comes ONLY from the verified
+    token's ``org_id`` claim (set by AuthMiddleware) — never from a client-
+    supplied field, since that field is exactly what separates one tenant's
+    documents from another's. A request body/query ``org_id`` that doesn't
+    match the token's is rejected rather than silently overridden. For a
+    trusted service-to-service caller (static API key, or auth disabled
+    entirely) the caller may assert org_id explicitly, same as
+    ``resolve_user_id``.
+    """
+    requested = (requested or "").strip()
+    if getattr(request.state, "auth_method", None) == "jwt":
+        token_org_id = getattr(request.state, "org_id", "") or ""
+        if requested and requested != token_org_id:
+            raise HTTPException(
+                status_code=403,
+                detail="org_id does not match the authenticated token.",
+            )
+        return token_org_id
+    return requested

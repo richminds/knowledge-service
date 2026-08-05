@@ -151,7 +151,12 @@ class RAGSettings(BaseSettings):
     auth_enabled: bool = False
     jwt_secret: str = ""
     jwt_algorithm: str = "HS256"
-    jwt_issuer: str = "knowledge-service"
+    # auth-service is the trust root for end-user tokens (it mints iss=
+    # "auth-service", aud includes "knowledge-service") — this must match its
+    # AUTH_JWT_ISSUER, and RAG_JWT_SECRET must equal AUTH_JWT_SECRET (HS256 is
+    # symmetric). JWTValidator.create_token() still uses jwt_issuer for
+    # self-minted service-to-service/test tokens, so that keeps working too.
+    jwt_issuer: str = "auth-service"
     jwt_audience: str = "knowledge-service"
 
 

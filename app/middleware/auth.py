@@ -10,8 +10,11 @@ whichever fits:
    principal. Format is ``name:key`` or ``name:key:role`` — role defaults to
    ``"user"``.
 2. **JWT** (``RAG_AUTH_ENABLED`` + ``RAG_JWT_SECRET``) — validated by
-   ``rag.auth.JWTValidator``; the token's ``sub`` becomes the principal and
-   its ``role`` claim becomes the role, defaulting to ``"user"`` when absent.
+   ``rag.auth.JWTValidator``; the token's ``sub`` becomes the principal, its
+   ``role`` claim becomes the role (default ``"user"``), and its ``org_id``
+   claim becomes ``request.state.org_id`` — the verified tenant boundary that
+   ``app/dependencies.py``'s ``resolve_org_id`` uses instead of trusting a
+   client-supplied ``org_id`` field.
 
 Either way, the resolved role lands on ``request.state.role`` — see
 ``app/dependencies.py``'s ``require_admin`` for how routes gate on it.
@@ -130,6 +133,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return _unauthorized(str(exc))
             request.state.principal = claims.sub
             request.state.role = claims.extra.get("role") or "user"
+            # The hard tenant-isolation boundary (see rag/authorization.py) —
+            # taken ONLY from the verified token from here on, never from a
+            # request body/query field. See app/dependencies.py::resolve_org_id.
+            request.state.org_id = claims.extra.get("org_id") or ""
             request.state.auth_method = "jwt"
             return await call_next(request)
 
