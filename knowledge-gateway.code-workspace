@@ -11,6 +11,9 @@
 		},
 		{
 			"path": "../knowledge-ingest-ui"
+		},
+		{
+			"path": "../account-management-ui"
 		}
 	],
 	"settings": {}
