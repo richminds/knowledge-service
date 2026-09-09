@@ -9,7 +9,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request
 
-from ..dependencies import get_principal, resolve_account_id, resolve_org_id
+from ..dependencies import get_principal, resolve_account_id
 from ..models.document_model import DeleteResponse, FilesListResponse
 from ..services import document_service
 
@@ -36,14 +36,12 @@ async def delete_document(source: str, principal: str = Depends(get_principal)) 
 async def list_files(
     request: Request,
     limit: int = 100,
-    org_id: str | None = None,
     account_id: str | None = None,
     _: str = Depends(get_principal),
 ) -> FilesListResponse:
-    """List persisted files. ``org_id``/``account_id`` scope the list to that
-    org/application (plus unscoped files); omit them to see only unscoped
-    files — same fail-closed default as query-time chunk filtering (see
+    """List persisted files. ``account_id`` scopes the list to that
+    application (plus unscoped files); omit it to see only unscoped files —
+    same fail-closed default as query-time chunk filtering (see
     rag/authorization.py)."""
-    org_id = resolve_org_id(org_id, request)
     account_id = resolve_account_id(account_id, request)
-    return await document_service.list_files(limit=limit, org_id=org_id, account_id=account_id)
+    return await document_service.list_files(limit=limit, account_id=account_id)

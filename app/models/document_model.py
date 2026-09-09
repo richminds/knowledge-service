@@ -18,7 +18,6 @@ class FileEntry(BaseModel):
     content_type: str | None = None
     uploaded_at: str | None = None
     uploaded_by: str | None = None
-    org_id: str | None = None
     account_id: str | None = None
 
 

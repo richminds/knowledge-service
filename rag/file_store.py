@@ -39,13 +39,10 @@ class StoredFile(BaseModel):
     # `uploaded_by` document metadata for the same concept applied to
     # ingested chunks) — provenance only, not an access-control field.
     uploaded_by: str | None = None
-    # Organization this file is scoped to — unlike uploaded_by, this IS an
-    # access-control field, enforced by list()'s org_id filter the same way
-    # rag/authorization.py enforces it for chunks. None/"*" means unscoped
-    # (visible to every org).
-    org_id: str | None = None
     # Application (auth-service app account) this file was uploaded under —
-    # an access-control field enforced by list() the same way as org_id.
+    # unlike uploaded_by, this IS an access-control field, enforced by list()
+    # the same way rag/authorization.py enforces it for chunks. None/"*" means
+    # unscoped (visible to every account).
     account_id: str | None = None
 
 
@@ -70,7 +67,6 @@ class FileStore(Protocol):
     async def list(
         self,
         limit: int = 100,
-        org_id: str | None = None,
         account_id: str | None = None,
     ) -> list[StoredFile]: ...
 
@@ -122,7 +118,6 @@ class MongoGridFSFileStore:
             backend=self.backend,
             content_type=content_type,
             uploaded_by=meta.get("uploaded_by") or None,
-            org_id=meta.get("org_id") or None,
             account_id=meta.get("account_id") or None,
         )
 
@@ -147,16 +142,15 @@ class MongoGridFSFileStore:
     async def list(
         self,
         limit: int = 100,
-        org_id: str | None = None,
         account_id: str | None = None,
     ) -> list[StoredFile]:
         """List persisted files, newest first.
 
-        ``org_id`` and ``account_id`` mirror the chunk-level boundaries in
-        rag/authorization.py: when given, only files tagged with that value
+        ``account_id`` mirrors the chunk-level boundary in
+        rag/authorization.py: when given, only files tagged with that account
         (or left unscoped — absent metadata, or "*") are returned. When
         omitted, only unscoped files are returned — same fail-closed default
-        as query-time chunk filtering, so a caller with no org/account context
+        as query-time chunk filtering, so a caller with no account context
         can't see any specific one's files.
         """
         from .mongo_connection import get_connection
@@ -189,8 +183,7 @@ class MongoGridFSFileStore:
                     content_type=meta.get("content_type"),
                     uploaded_at=upload_date.isoformat() if upload_date else None,
                     uploaded_by=meta.get("uploaded_by") or None,
-                    org_id=meta.get("org_id") or None,
-                    account_id=meta.get("account_id") or None,
+                            account_id=meta.get("account_id") or None,
                 )
             )
         return out
