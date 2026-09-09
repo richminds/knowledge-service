@@ -93,3 +93,26 @@ def resolve_org_id(requested: str | None, request: Request) -> str:
             )
         return token_org_id
     return requested
+
+
+def resolve_account_id(requested: str | None, request: Request) -> str:
+    """Resolve the application (app account) for this request — the second
+    isolation boundary, enforced in rag/authorization.py alongside org_id.
+
+    A user can belong to several applications and picks one at sign-in
+    (auth-service POST /auth/me/account), which bakes the choice into the
+    token. So, exactly like ``resolve_org_id``, a JWT caller's account comes
+    ONLY from the verified ``account_id`` claim and a mismatching client-
+    supplied value is rejected; a trusted service-to-service caller (static
+    API key, or auth disabled) may assert one explicitly.
+    """
+    requested = (requested or "").strip()
+    if getattr(request.state, "auth_method", None) == "jwt":
+        token_account_id = getattr(request.state, "account_id", "") or ""
+        if requested and requested != token_account_id:
+            raise HTTPException(
+                status_code=403,
+                detail="account_id does not match the authenticated token.",
+            )
+        return token_account_id
+    return requested

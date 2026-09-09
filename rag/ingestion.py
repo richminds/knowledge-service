@@ -46,6 +46,10 @@ class IngestionState(TypedDict, total=False):
     # an access-control field — recorded as `metadata["org_id"]` and enforced
     # as a hard tenant boundary at query time (see rag/authorization.py).
     org_id: str
+    # Application (auth-service app account) this ingestion was made under.
+    # Same kind of access-control field as org_id: recorded as
+    # `metadata["account_id"]` and enforced as a hard boundary at query time.
+    account_id: str
     raw_documents: list[Document]
     chunks: list[Document]
     inserted_count: int
@@ -77,6 +81,7 @@ async def _parse_and_load(state: IngestionState) -> IngestionState:
         paths,
         uploaded_by=state.get("uploaded_by") or None,
         org_id=state.get("org_id") or None,
+        account_id=state.get("account_id") or None,
     )
     logger.info("parse_and_load: loaded %d document(s).", len(raw_documents))
     return {"raw_documents": raw_documents}
@@ -129,6 +134,7 @@ async def ingest(
     chunk_strategy: ChunkStrategy = "recursive",
     uploaded_by: str | None = None,
     org_id: str | None = None,
+    account_id: str | None = None,
 ) -> IngestionState:
     """Run the full ingestion pipeline and return the final state."""
     graph = build_ingestion_graph()
@@ -138,5 +144,6 @@ async def ingest(
             "chunk_strategy": chunk_strategy,
             "uploaded_by": uploaded_by or "",
             "org_id": org_id or "",
+            "account_id": account_id or "",
         }
     )

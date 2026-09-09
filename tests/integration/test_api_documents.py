@@ -16,13 +16,18 @@ class _FakeFileStore:
     def __init__(self, files: list[StoredFile]) -> None:
         self._files = files
 
-    async def list(self, limit: int = 100, org_id: str | None = None) -> list[StoredFile]:
+    async def list(
+        self,
+        limit: int = 100,
+        org_id: str | None = None,
+        account_id: str | None = None,
+    ) -> list[StoredFile]:
         # Mirrors MongoGridFSFileStore.list()'s filtering rule so this test
         # exercises the same contract the real backend promises.
         def visible(f: StoredFile) -> bool:
-            if f.org_id in (None, "*"):
-                return True
-            return f.org_id == org_id
+            if f.org_id not in (None, "*") and f.org_id != org_id:
+                return False
+            return f.account_id in (None, "*") or f.account_id == account_id
 
         return [f for f in self._files if visible(f)][:limit]
 

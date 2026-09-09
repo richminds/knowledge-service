@@ -19,13 +19,20 @@ from fastapi.testclient import TestClient
 def mock_ingest(monkeypatch):
     calls: list[dict] = []
 
-    async def _fake(input_paths, chunk_strategy="recursive", uploaded_by=None, org_id=None):
+    async def _fake(
+        input_paths,
+        chunk_strategy="recursive",
+        uploaded_by=None,
+        org_id=None,
+        account_id=None,
+    ):
         calls.append(
             {
                 "input_paths": input_paths,
                 "chunk_strategy": chunk_strategy,
                 "uploaded_by": uploaded_by,
                 "org_id": org_id,
+                "account_id": account_id,
             }
         )
         return {"inserted_count": 3, "graph_inserted_count": 0}
@@ -52,6 +59,7 @@ class _FakeFileStore:
             size=len(data),
             backend=self.backend,
             org_id=(metadata or {}).get("org_id") or None,
+            account_id=(metadata or {}).get("account_id") or None,
         )
 
 

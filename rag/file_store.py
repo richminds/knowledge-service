@@ -44,6 +44,9 @@ class StoredFile(BaseModel):
     # rag/authorization.py enforces it for chunks. None/"*" means unscoped
     # (visible to every org).
     org_id: str | None = None
+    # Application (auth-service app account) this file was uploaded under —
+    # an access-control field enforced by list() the same way as org_id.
+    account_id: str | None = None
 
 
 @runtime_checkable
@@ -64,7 +67,12 @@ class FileStore(Protocol):
 
     async def delete(self, file_id: str) -> bool: ...
 
-    async def list(self, limit: int = 100, org_id: str | None = None) -> list[StoredFile]: ...
+    async def list(
+        self,
+        limit: int = 100,
+        org_id: str | None = None,
+        account_id: str | None = None,
+    ) -> list[StoredFile]: ...
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +123,7 @@ class MongoGridFSFileStore:
             content_type=content_type,
             uploaded_by=meta.get("uploaded_by") or None,
             org_id=meta.get("org_id") or None,
+            account_id=meta.get("account_id") or None,
         )
 
     async def read(self, file_id: str) -> bytes:
@@ -135,27 +144,33 @@ class MongoGridFSFileStore:
             logger.warning("FileStore(mongodb): delete %s failed: %s", file_id, exc)
             return False
 
-    async def list(self, limit: int = 100, org_id: str | None = None) -> list[StoredFile]:
+    async def list(
+        self,
+        limit: int = 100,
+        org_id: str | None = None,
+        account_id: str | None = None,
+    ) -> list[StoredFile]:
         """List persisted files, newest first.
 
-        ``org_id`` mirrors the chunk-level tenant boundary in
-        rag/authorization.py: when given, only files tagged with that org_id
+        ``org_id`` and ``account_id`` mirror the chunk-level boundaries in
+        rag/authorization.py: when given, only files tagged with that value
         (or left unscoped — absent metadata, or "*") are returned. When
         omitted, only unscoped files are returned — same fail-closed default
-        as query-time chunk filtering, so a caller with no org context can't
-        see any specific org's files.
+        as query-time chunk filtering, so a caller with no org/account context
+        can't see any specific one's files.
         """
         from .mongo_connection import get_connection
 
         conn = await get_connection(uri=settings.mongo_uri, db_name=settings.mongo_db_name)
         files_col = conn.get_collection(f"{self._bucket_name}.files")
 
-        unscoped = {"metadata.org_id": {"$exists": False}}
-        unscoped_or_wildcard = {"$or": [unscoped, {"metadata.org_id": "*"}]}
-        if org_id:
-            mongo_filter = {"$or": [unscoped, {"metadata.org_id": {"$in": ["*", org_id]}}]}
-        else:
-            mongo_filter = unscoped_or_wildcard
+        def _scope(field: str, value: str | None) -> dict:
+            unscoped = {f"metadata.{field}": {"$exists": False}}
+            if value:
+                return {"$or": [unscoped, {f"metadata.{field}": {"$in": ["*", value]}}]}
+            return {"$or": [unscoped, {f"metadata.{field}": "*"}]}
+
+        mongo_filter = {"$and": [_scope("org_id", org_id), _scope("account_id", account_id)]}
 
         cursor = files_col.find(mongo_filter, sort=[("uploadDate", -1)], limit=limit)
         out: list[StoredFile] = []
@@ -172,6 +187,7 @@ class MongoGridFSFileStore:
                     uploaded_at=upload_date.isoformat() if upload_date else None,
                     uploaded_by=meta.get("uploaded_by") or None,
                     org_id=meta.get("org_id") or None,
+                    account_id=meta.get("account_id") or None,
                 )
             )
         return out

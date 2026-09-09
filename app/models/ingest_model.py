@@ -35,6 +35,14 @@ class IngestRequest(BaseModel):
             "('*', visible to every org, matching today's default)."
         ),
     )
+    account_id: str | None = Field(
+        default=None,
+        description=(
+            "Application (auth-service app account) this ingestion is scoped to, recorded "
+            "as `account_id` on every resulting chunk's metadata and enforced at query time "
+            "exactly like org_id. Omit to leave chunks unscoped ('*')."
+        ),
+    )
 
 
 class IngestResponse(BaseModel):

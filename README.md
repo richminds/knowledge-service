@@ -115,6 +115,37 @@ uploaded a document — narrowing visibility to the uploader by default is a
 policy decision for later, once there's a concrete requirement for it; today
 this only makes authorship queryable/auditable.
 
+### Account and tenant isolation
+
+Two hard isolation boundaries scope every chunk and file, both enforced the
+same way in `rag/authorization.py::is_authorized_document`:
+
+| Metadata | What it scopes to | Set at ingest by |
+|---|---|---|
+| `org_id` | the **tenant** (organization) the data belongs to | `POST /v1/ingest` / `/v1/upload` `org_id`, or the JWT's `org_id` claim |
+| `account_id` | the **application** ([auth-service app account](../auth-service/README.md#one-login-for-every-application)) the data was ingested under | `POST /v1/ingest` / `/v1/upload` `account_id`, or the JWT's `account_id` claim |
+
+Both are **hard AND gates**, checked independently and before the permissive
+`authorized_users`/`authorized_teams` OR-list: a chunk tagged with a specific
+value is returned **only** to a query carrying that same value; a chunk left
+unscoped (`"*"`, the default) is visible to everyone. Matching a `user_id` or
+`team_id` never excuses a mismatched `org_id`/`account_id` — that's what makes
+them isolation boundaries rather than another entry in the OR-list.
+
+For a **JWT** caller, both values come *only* from the verified token
+(`org_id`/`account_id` claims, set by `AuthMiddleware`) — a request body or
+query field that disagrees is rejected with 403, never silently overridden
+(`app/dependencies.py::resolve_org_id`/`resolve_account_id`). This is what
+lets `account_id` reflect the application a user chose at sign-in
+(auth-service `POST /auth/me/account`) rather than anything the client asserts.
+For a **trusted service-to-service** caller (static `KNOWLEDGE_API_KEYS`, or
+auth disabled entirely) both may be asserted explicitly, since such a caller
+acts on behalf of many end-users.
+
+`GET /v1/files` applies the same two boundaries to the GridFS listing, with
+the same fail-closed default: a caller supplying no `org_id`/`account_id` sees
+only unscoped files, never another tenant's or application's.
+
 ## Request flow
 
 ```

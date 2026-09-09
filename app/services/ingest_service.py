@@ -50,6 +50,7 @@ async def start_ingest(
     background_tasks: BackgroundTasks,
     uploaded_by: str = "",
     org_id: str = "",
+    account_id: str = "",
 ) -> IngestResponse:
     """Submit an ingestion job for server-side paths. Returns immediately with a job_id to poll."""
     job_id = _new_job()
@@ -60,6 +61,7 @@ async def start_ingest(
         chunk_strategy=request.chunk_strategy,
         uploaded_by=uploaded_by,
         org_id=org_id,
+        account_id=account_id,
     )
     return IngestResponse(
         job_id=job_id,
@@ -74,6 +76,7 @@ async def upload_and_ingest(
     background_tasks: BackgroundTasks,
     uploaded_by: str = "",
     org_id: str = "",
+    account_id: str = "",
 ) -> IngestResponse:
     """Accept uploads, persist the bytes durably (GridFS), then ingest.
 
@@ -125,6 +128,7 @@ async def upload_and_ingest(
                     "chunk_strategy": chunk_strategy,
                     "uploaded_by": uploaded_by,
                     "org_id": org_id,
+                    "account_id": account_id,
                 },
             )
             persisted += 1
@@ -154,6 +158,7 @@ async def upload_and_ingest(
         chunk_strategy=chunk_strategy,
         uploaded_by=uploaded_by,
         org_id=org_id,
+        account_id=account_id,
     )
     return IngestResponse(
         job_id=job_id,
@@ -180,6 +185,7 @@ async def _run_ingest_job(
     chunk_strategy: str,
     uploaded_by: str = "",
     org_id: str = "",
+    account_id: str = "",
 ) -> None:
     """Execute ingestion in the background and update the job registry."""
     _jobs[job_id]["status"] = "running"
@@ -189,6 +195,7 @@ async def _run_ingest_job(
             chunk_strategy=chunk_strategy,
             uploaded_by=uploaded_by,
             org_id=org_id,
+            account_id=account_id,
         )  # type: ignore[arg-type]
         _jobs[job_id].update(
             {

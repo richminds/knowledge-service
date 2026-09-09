@@ -3,7 +3,9 @@ import pytest
 
 @pytest.fixture()
 def mock_rag_query(monkeypatch):
-    async def _fake(question, metadata_filter=None, user_id=None, team_id=None, org_id=None):
+    async def _fake(
+        question, metadata_filter=None, user_id=None, team_id=None, org_id=None, account_id=None
+    ):
         return {
             "answer": "This is the answer. [1]",
             "selected_chunks": [],
@@ -53,8 +55,10 @@ def test_query_endpoint_requires_question_field(api):
 def test_query_endpoint_forwards_org_id(api, monkeypatch):
     calls: list[dict] = []
 
-    async def _fake(question, metadata_filter=None, user_id=None, team_id=None, org_id=None):
-        calls.append({"org_id": org_id})
+    async def _fake(
+        question, metadata_filter=None, user_id=None, team_id=None, org_id=None, account_id=None
+    ):
+        calls.append({"org_id": org_id, "account_id": account_id})
         return {
             "answer": "answer",
             "selected_chunks": [],

@@ -85,3 +85,39 @@ def test_filter_authorized_results_enforces_org_isolation():
 
     results = filter_authorized_results([org_a_doc, org_b_doc, public_doc], org_id="org-a")
     assert results == [org_a_doc, public_doc]
+
+
+# ─────────────────────────────────────────── account_id application isolation
+
+
+def test_unscoped_document_is_visible_to_any_account():
+    doc = _doc()  # no account_id key — same as loader.py's "*" default
+    assert is_authorized_document(doc, account_id="ingest") is True
+    assert is_authorized_document(doc, account_id=None) is True
+
+
+def test_account_scoped_document_is_only_visible_under_its_own_account():
+    doc = _doc(account_id="ingest", authorized_users="*", authorized_teams="*")
+    assert is_authorized_document(doc, account_id="ingest") is True
+    assert is_authorized_document(doc, account_id="portal") is False
+    # Fail closed for a caller that names no account at all.
+    assert is_authorized_document(doc) is False
+
+
+def test_account_gate_is_independent_of_the_org_gate():
+    # Both are hard ANDs: matching one doesn't excuse missing the other.
+    doc = _doc(account_id="ingest", org_id="org-a")
+    assert is_authorized_document(doc, account_id="ingest", org_id="org-a") is True
+    assert is_authorized_document(doc, account_id="ingest", org_id="org-b") is False
+    assert is_authorized_document(doc, account_id="portal", org_id="org-a") is False
+
+
+def test_filter_authorized_results_enforces_account_isolation():
+    ingest_doc = ScoredDocument(document=_doc(account_id="ingest"), score=1.0, source="semantic")
+    portal_doc = ScoredDocument(document=_doc(account_id="portal"), score=1.0, source="semantic")
+    public_doc = ScoredDocument(document=_doc(), score=1.0, source="semantic")
+
+    results = filter_authorized_results(
+        [ingest_doc, portal_doc, public_doc], account_id="ingest"
+    )
+    assert results == [ingest_doc, public_doc]

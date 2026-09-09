@@ -47,6 +47,7 @@ class QueryState(TypedDict, total=False):
     user_id: str
     team_id: str
     org_id: str
+    account_id: str
     query_embedding: list[float]
     semantic_results: list[ScoredDocument]
     keyword_results: list[ScoredDocument]
@@ -121,6 +122,7 @@ async def _semantic_search(state: QueryState) -> QueryState:
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
             org_id=state.get("org_id"),
+            account_id=state.get("account_id"),
         )
     }
 
@@ -139,6 +141,7 @@ async def _keyword_search(state: QueryState) -> QueryState:
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
             org_id=state.get("org_id"),
+            account_id=state.get("account_id"),
         )
     }
 
@@ -156,6 +159,7 @@ async def _graph_search(state: QueryState) -> QueryState:
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
             org_id=state.get("org_id"),
+            account_id=state.get("account_id"),
         )
     }
 
@@ -176,6 +180,7 @@ async def _web_search(state: QueryState) -> QueryState:
             user_id=state.get("user_id"),
             team_id=state.get("team_id"),
             org_id=state.get("org_id"),
+            account_id=state.get("account_id"),
         )
     }
 
@@ -271,6 +276,7 @@ async def query(
     user_id: str | None = None,
     team_id: str | None = None,
     org_id: str | None = None,
+    account_id: str | None = None,
 ) -> QueryState:
     """Run the full query pipeline and return the final state."""
     graph = build_query_graph()
@@ -280,5 +286,6 @@ async def query(
         "user_id": user_id or "",
         "team_id": team_id or "",
         "org_id": org_id or "",
+        "account_id": account_id or "",
     }
     return await graph.ainvoke(initial)

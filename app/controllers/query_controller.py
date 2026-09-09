@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ..config import gateway_settings
-from ..dependencies import get_principal, resolve_org_id, resolve_user_id
+from ..dependencies import get_principal, resolve_account_id, resolve_org_id, resolve_user_id
 from ..models.query_model import QueryRequest, QueryResponse
 from ..services import query_service
 
@@ -30,6 +30,7 @@ async def rag_query(
     """Run the full RAG pipeline (embed → retrieve → rerank → generate)."""
     body.user_id = resolve_user_id(body.user_id, request)
     body.org_id = resolve_org_id(body.org_id, request)
+    body.account_id = resolve_account_id(body.account_id, request)
     if len(body.question) > gateway_settings.max_question_length:
         raise HTTPException(
             status_code=413,

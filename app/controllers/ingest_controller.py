@@ -10,7 +10,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Request, UploadFile
 
-from ..dependencies import get_principal, resolve_org_id, resolve_user_id
+from ..dependencies import get_principal, resolve_account_id, resolve_org_id, resolve_user_id
 from ..models.ingest_model import IngestRequest, IngestResponse, JobStatusResponse
 from ..services import ingest_service
 
@@ -33,12 +33,13 @@ async def start_ingest(
 ) -> IngestResponse:
     user_id = resolve_user_id(body.user_id, request)
     org_id = resolve_org_id(body.org_id, request)
+    account_id = resolve_account_id(body.account_id, request)
     logger.info(
-        "Ingest requested by %s (user_id=%s, org_id=%s): %d path(s)",
-        principal, user_id, org_id or "*", len(body.input_paths),
+        "Ingest requested by %s (user_id=%s, org_id=%s, account_id=%s): %d path(s)",
+        principal, user_id, org_id or "*", account_id or "*", len(body.input_paths),
     )
     return await ingest_service.start_ingest(
-        body, background_tasks, uploaded_by=user_id, org_id=org_id
+        body, background_tasks, uploaded_by=user_id, org_id=org_id, account_id=account_id
     )
 
 
@@ -65,16 +66,31 @@ async def upload_and_ingest(
             "leave chunks unscoped ('*', visible to every org)."
         ),
     ),
+    account_id: str | None = Form(
+        default=None,
+        description=(
+            "Application (auth-service app account) this upload is scoped to; chunks are "
+            "tagged with it and only returned to queries made under the same account. "
+            "Omit to leave chunks unscoped ('*', visible to every application)."
+        ),
+    ),
     principal: str = Depends(get_principal),
 ) -> IngestResponse:
     resolved_user_id = resolve_user_id(user_id, request)
     resolved_org_id = resolve_org_id(org_id, request)
+    resolved_account_id = resolve_account_id(account_id, request)
     logger.info(
-        "Upload requested by %s (user_id=%s, org_id=%s): %d file(s)",
-        principal, resolved_user_id, resolved_org_id or "*", len(files),
+        "Upload requested by %s (user_id=%s, org_id=%s, account_id=%s): %d file(s)",
+        principal, resolved_user_id, resolved_org_id or "*", resolved_account_id or "*",
+        len(files),
     )
     return await ingest_service.upload_and_ingest(
-        files, chunk_strategy, background_tasks, uploaded_by=resolved_user_id, org_id=resolved_org_id
+        files,
+        chunk_strategy,
+        background_tasks,
+        uploaded_by=resolved_user_id,
+        org_id=resolved_org_id,
+        account_id=resolved_account_id,
     )
 
 

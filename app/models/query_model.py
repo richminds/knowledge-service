@@ -25,6 +25,15 @@ class QueryRequest(BaseModel):
             "is never returned, regardless of user_id/team_id."
         ),
     )
+    account_id: str | None = Field(
+        default=None,
+        description=(
+            "Restricts results to chunks ingested under this application (an "
+            "auth-service app account); unscoped ('*') chunks are always included. "
+            "A hard boundary like org_id — for a JWT caller it comes from the token's "
+            "account_id claim, so it reflects the account chosen at sign-in."
+        ),
+    )
 
 
 class QueryResponse(BaseModel):
