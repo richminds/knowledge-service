@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "env": {
+    "KNOWLEDGE_CORS_ORIGIN_REGEX": "^https://knowledge-ingest-ui[a-z0-9-]*\\.vercel\\.app$"
+  }
+}

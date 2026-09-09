@@ -48,6 +48,13 @@ class KnowledgeServiceSettings(BaseSettings):
     # callers are unaffected.
     cors_origins: str = ""
 
+    # Vercel gives every deployment and every preview its own hostname
+    # (knowledge-ingest-ui-<hash>-<scope>.vercel.app), so an exact allowlist
+    # goes stale on each deploy and previews are broken by default. A regex
+    # covers the whole family in one rule — anchor it to the projects you
+    # actually own, never leave it open.
+    cors_origin_regex: str = ""
+
     # ------------------------------------------------------------- auth
     # Static service API keys — the simplest cloud auth, same shape as the LLM
     # Gateway's GATEWAY_API_KEYS. Comma-separated list of "name:key" or

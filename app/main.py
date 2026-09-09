@@ -138,10 +138,12 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestContextMiddleware)
 
     origins = gateway_settings.parsed_cors_origins()
-    if origins:
+    origin_regex = gateway_settings.cors_origin_regex.strip()
+    if origins or origin_regex:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=origins,
+            allow_origin_regex=origin_regex or None,
             allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
