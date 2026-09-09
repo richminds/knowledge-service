@@ -92,7 +92,7 @@ async def test_query_pipeline_end_to_end(monkeypatch):
     assert result["parent_chunks"]
     # Knee-point selection produced a non-empty context window.
     assert result["selected_chunks"]
-    # Generation used the LLM Gateway stand-in, not the local extractive fallback.
+    # Generation used the LLM Gateway stand-in — the only path that composes an answer.
     assert result["answer"] == "Refunds take five business days. [1]"
     # Citation validation ran against the actual selected chunk count.
     assert result["citation_validation"]["cited_numbers"] == [1]

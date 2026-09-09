@@ -1,8 +1,10 @@
 """LLM layer for RAG — generation and prompt construction via the LLM Gateway.
 
-All LLM calls go through the vendored gateway SDK's ``RemoteLLMClient`` (see
-``rag/llm_gateway_client.py``), an HTTP call to a deployed LLM Gateway
-instance, so they inherit whatever that gateway provides:
+Every LLM call in this service goes through the vendored gateway SDK's
+``RemoteLLMClient`` (see ``rag/llm_gateway_client.py``), an HTTP call to a
+deployed LLM Gateway instance — this package holds no provider API key and
+imports no provider SDK, so there is no path that reaches a model any other
+way. Routing through the gateway is what gives these calls its:
   - Fallback chain (primary → configured fallbacks)
   - Per-model retries with exponential backoff
   - Full request tracking (MongoDB or JSONL)
@@ -17,6 +19,15 @@ from langchain_core.documents import Document
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+# Returned verbatim when the gateway can't be reached. Deliberately says
+# nothing about the retrieved evidence — the gateway is the only place an
+# answer is ever composed, so a gateway outage yields no answer, not a
+# locally assembled substitute.
+_UNAVAILABLE_ANSWER = (
+    "No answer is available right now — the language model service could not "
+    "be reached. Please try again shortly."
+)
 
 
 # ──────────────────────────────────────────────────────── prompt builder
@@ -52,10 +63,10 @@ def build_augmented_prompt(question: str, chunks: list[Document]) -> str:
 async def generate_answer(question: str, chunks: list[Document]) -> str:
     """Generate the final RAG answer via the LLM Gateway.
 
-    Routes through the gateway's RemoteLLMClient so the call participates in
-    the full gateway fallback chain and request-tracking pipeline. Returns a
-    local extractive summary if the gateway is unreachable or every model
-    fails.
+    The gateway (``RemoteLLMClient``) is the sole path to a model, so the call
+    participates in the full gateway fallback chain and request-tracking
+    pipeline. If the gateway is unreachable or every model fails, returns a
+    short unavailability message — no answer is composed locally.
     """
     prompt = build_augmented_prompt(question, chunks)
 
@@ -73,40 +84,9 @@ async def generate_answer(question: str, chunks: list[Document]) -> str:
 
     except Exception as exc:
         logger.warning(
-            "LLM Gateway unavailable for RAG generation (%s: %s) — "
-            "falling back to local extractive answer.",
+            "LLM Gateway unavailable for RAG generation (%s: %s) — returning "
+            "unavailability message.",
             type(exc).__name__,
             exc,
         )
-        return _local_extractive_answer(question, chunks)
-
-
-# ──────────────────────────────────────────────────────── local fallback
-
-def _local_extractive_answer(question: str, chunks: list[Document]) -> str:
-    """Return a simple evidence summary when the LLM Gateway is unavailable."""
-    if not chunks:
-        return "I do not have enough retrieved evidence to answer this question."
-
-    lines = [
-        "Local grounded answer (LLM Gateway unavailable):",
-        "",
-        f"Question: {question}",
-        "",
-        "Most relevant evidence:",
-    ]
-    for idx, chunk in enumerate(chunks, start=1):
-        source = chunk.metadata.get("file_name") or chunk.metadata.get("source", "unknown")
-        section = chunk.metadata.get("section", "unknown")
-        page_number = chunk.metadata.get("page_number", "n/a")
-        snippet = " ".join(chunk.page_content.split())[:500]
-        lines.append(
-            f"- [{idx}] {snippet}  (source: {source}, section: {section}, page: {page_number})"
-        )
-
-    lines.extend([
-        "",
-        "Configure RAG_GATEWAY_BASE_URL / RAG_GATEWAY_API_KEY to reach a live "
-        "LLM Gateway for a fluent LLM-generated response.",
-    ])
-    return "\n".join(lines)
+        return _UNAVAILABLE_ANSWER
