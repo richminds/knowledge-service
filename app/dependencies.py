@@ -71,28 +71,14 @@ def resolve_user_id(requested: str | None, request: Request) -> str:
 
 
 def resolve_org_id(requested: str | None, request: Request) -> str:
-    """Resolve the tenant (org) for this request — the hard isolation boundary
-    enforced in rag/authorization.py.
+    """Always "". The organization scope has been removed platform-wide.
 
-    For a JWT-authenticated end user, org_id comes ONLY from the verified
-    token's ``org_id`` claim (set by AuthMiddleware) — never from a client-
-    supplied field, since that field is exactly what separates one tenant's
-    documents from another's. A request body/query ``org_id`` that doesn't
-    match the token's is rejected rather than silently overridden. For a
-    trusted service-to-service caller (static API key, or auth disabled
-    entirely) the caller may assert org_id explicitly, same as
-    ``resolve_user_id``.
+    Kept as a no-op rather than deleted so the request models and controllers
+    that still accept an ``org_id`` field keep working — the value is simply
+    ignored now, instead of silently scoping a query to a tenant that no token
+    can name. An ACCOUNT (``resolve_account_id``) is the only scope.
     """
-    requested = (requested or "").strip()
-    if getattr(request.state, "auth_method", None) == "jwt":
-        token_org_id = getattr(request.state, "org_id", "") or ""
-        if requested and requested != token_org_id:
-            raise HTTPException(
-                status_code=403,
-                detail="org_id does not match the authenticated token.",
-            )
-        return token_org_id
-    return requested
+    return ""
 
 
 def resolve_account_id(requested: str | None, request: Request) -> str:

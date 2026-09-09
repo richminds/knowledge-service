@@ -78,9 +78,11 @@ def is_authorized_document(
     if doc_account != "*" and doc_account != account_id:
         return False
 
-    doc_org = str(document.metadata.get("org_id") or "*")
-    if doc_org != "*" and doc_org != org_id:
-        return False
+    # The organization boundary was removed: an ACCOUNT is now the only scope
+    # (auth-service no longer issues org_id, so nothing could populate it).
+    # Documents ingested before that still carry metadata["org_id"]; it is
+    # deliberately not read, so they remain visible to their account rather
+    # than disappearing behind a filter nothing can satisfy.
 
     users = _metadata_values(document.metadata.get("authorized_users", "*"))
     teams = _metadata_values(document.metadata.get("authorized_teams", "*"))

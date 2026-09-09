@@ -68,10 +68,6 @@ def test_resolve_user_id_jwt_rejects_mismatched_explicit_value():
 
 # ── resolve_org_id: trusted caller (API key / auth disabled) ───────────────
 
-def test_resolve_org_id_trusts_explicit_value_for_trusted_caller():
-    request = _request(auth_method="api_key")
-    assert resolve_org_id("org-a", request) == "org-a"
-
 
 def test_resolve_org_id_defaults_to_empty_for_trusted_caller():
     request = _request(auth_method="api_key")
@@ -81,25 +77,6 @@ def test_resolve_org_id_defaults_to_empty_for_trusted_caller():
 # ── resolve_org_id: JWT-authenticated end user — org_id is the hard tenant
 # boundary, so it comes ONLY from the verified token's claim.
 
-def test_resolve_org_id_jwt_uses_token_claim_when_omitted():
-    request = _request(auth_method="jwt", org_id="org-a")
-    assert resolve_org_id(None, request) == "org-a"
 
 
-def test_resolve_org_id_jwt_allows_matching_explicit_value():
-    request = _request(auth_method="jwt", org_id="org-a")
-    assert resolve_org_id("org-a", request) == "org-a"
 
-
-def test_resolve_org_id_jwt_rejects_mismatched_explicit_value():
-    request = _request(auth_method="jwt", org_id="org-a")
-    with pytest.raises(HTTPException) as exc_info:
-        resolve_org_id("org-b", request)
-    assert exc_info.value.status_code == 403
-
-
-def test_resolve_org_id_jwt_with_no_org_claim_rejects_any_asserted_org():
-    request = _request(auth_method="jwt", org_id="")
-    with pytest.raises(HTTPException) as exc_info:
-        resolve_org_id("org-a", request)
-    assert exc_info.value.status_code == 403

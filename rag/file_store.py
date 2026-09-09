@@ -170,7 +170,10 @@ class MongoGridFSFileStore:
                 return {"$or": [unscoped, {f"metadata.{field}": {"$in": ["*", value]}}]}
             return {"$or": [unscoped, {f"metadata.{field}": "*"}]}
 
-        mongo_filter = {"$and": [_scope("org_id", org_id), _scope("account_id", account_id)]}
+        # Account is the only scope. An org_id filter here would hide every
+        # document ingested under the old organization model, because nothing
+        # populates org_id any more and _scope("") matches only "*".
+        mongo_filter = _scope("account_id", account_id)
 
         cursor = files_col.find(mongo_filter, sort=[("uploadDate", -1)], limit=limit)
         out: list[StoredFile] = []

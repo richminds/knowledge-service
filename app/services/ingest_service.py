@@ -127,7 +127,6 @@ async def upload_and_ingest(
                     "origin": "upload",
                     "chunk_strategy": chunk_strategy,
                     "uploaded_by": uploaded_by,
-                    "org_id": org_id,
                     "account_id": account_id,
                 },
             )

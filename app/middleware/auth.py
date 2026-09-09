@@ -137,7 +137,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # The hard tenant-isolation boundary (see rag/authorization.py) —
             # taken ONLY from the verified token from here on, never from a
             # request body/query field. See app/dependencies.py::resolve_org_id.
-            request.state.org_id = claims.extra.get("org_id") or ""
             # The application (auth-service app account) this token is scoped
             # to — the second isolation boundary, enforced exactly like
             # org_id. See app/dependencies.py::resolve_account_id.
