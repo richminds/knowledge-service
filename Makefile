@@ -36,6 +36,6 @@ docker-up:
 docker-down:
 	docker compose down
 
-# Mint a JWT for local testing when RAG_AUTH_ENABLED=true.
-token:
-	$(PY) scripts/mint_token.py
+# Token minting is gone: this service no longer validates tokens, so there is
+# nothing to mint one against. Drive it through the API gateway, or run with
+# RAG_AUTH_ENABLED=false for local work.

@@ -64,8 +64,8 @@ def _warn_on_open_access() -> None:
     message = (
         "AUTH IS DISABLED — every endpoint is open, and account isolation "
         "falls back to trusting the request body. Set RAG_AUTH_ENABLED=true "
-        "+ RAG_JWT_SECRET (matching auth-service's AUTH_JWT_SECRET) before "
-        "exposing this service. It is the only mechanism there is."
+        "and route all traffic through the API gateway before exposing this "
+        "service. It is the only mechanism there is."
     )
     if gateway_settings.is_production:
         logger.error("!!! %s", message)

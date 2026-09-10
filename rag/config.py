@@ -149,24 +149,26 @@ class RAGSettings(BaseSettings):
     # Each call carries the CALLER's token (rag/caller_context.py) — a JWT is
     # the only credential anything on this platform accepts now. A request with
     # no user behind it (the CLI, a test) has nothing to send and will 401;
-    # mint a service token with scripts/mint_token.py for that kind of work.
+    # route it through the API gateway for that kind of work.
     gateway_base_url: str = "http://localhost:8000/api/llm"
     gateway_timeout_seconds: float = 120.0
 
-    # ──────────────────────────────────────────────────────── auth (JWT)
-    # Mirrors the LLM Gateway's LLM_AUTH_ENABLED / LLM_JWT_* — an alternative
-    # to KNOWLEDGE_API_KEYS (app/config.py) for service-to-service auth on
-    # this service's own API.
+    # ────────────────────────────────────────────────────────────────── auth
+    # This service does NOT validate tokens. Every caller arrives through the
+    # API gateway, which validates the bearer token against auth-service
+    # (GET /auth/me), strips any identity headers the caller sent, and injects
+    # verified ones. This service reads those — see app/middleware/auth.py.
+    #
+    # That is why there is no JWT secret here any more. Holding one meant the
+    # same signing key lived in three services, had to be kept identical by
+    # hand (it had already drifted), and still could not see auth-service's
+    # revocation list — a logged-out token kept working until it expired.
+    # One service owns identity; everything else asks it, via the gateway.
+    #
+    # When true, a request must carry gateway-verified identity or it is
+    # rejected. When false, callers are anonymous with role "user" — for local
+    # development against a service running without a gateway in front.
     auth_enabled: bool = False
-    jwt_secret: str = ""
-    jwt_algorithm: str = "HS256"
-    # auth-service is the trust root for end-user tokens (it mints iss=
-    # "auth-service", aud includes "knowledge-service") — this must match its
-    # AUTH_JWT_ISSUER, and RAG_JWT_SECRET must equal AUTH_JWT_SECRET (HS256 is
-    # symmetric). JWTValidator.create_token() still uses jwt_issuer for
-    # self-minted service-to-service/test tokens, so that keeps working too.
-    jwt_issuer: str = "auth-service"
-    jwt_audience: str = "knowledge-service"
 
 
 settings = RAGSettings()

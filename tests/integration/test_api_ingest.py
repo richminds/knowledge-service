@@ -143,59 +143,58 @@ def test_upload_records_explicit_org_id(api, mock_ingest, mock_file_store):
     assert mock_file_store.save_calls[0]["metadata"]["org_id"] == "org-a"
 
 
-# ── JWT-authenticated caller: org_id is the token's claim, not the body's ──
-# (app/dependencies.py::resolve_org_id) — this is the tenant-isolation fix.
+# ── Gateway-authenticated caller: identity is the gateway's verified header,
+# not the request body (app/dependencies.py::resolve_user_id / resolve_account_id)
+# — this is the tenant-isolation fix.
 
 
-def _jwt_client(monkeypatch, secret: str = "test-secret") -> TestClient:
+def _gateway_client(monkeypatch) -> TestClient:
     import rag.config as rag_config_mod
 
     monkeypatch.setattr(rag_config_mod.settings, "auth_enabled", True)
-    monkeypatch.setattr(rag_config_mod.settings, "jwt_secret", secret)
 
     from app.main import create_app
 
     return TestClient(create_app())
 
 
-def _mint_token(secret: str = "test-secret", **extra_claims: str) -> str:
-    from rag.auth import JWTValidator
+def _gateway_headers(user_id: str = "USR-1", **extra: str) -> dict[str, str]:
+    """What the API gateway injects once it has verified the caller."""
+    headers = {"X-User-ID": user_id, "X-Authenticated-Via": "api-gateway"}
+    if extra.get("account_id"):
+        headers["X-Account-ID"] = extra["account_id"]
+    return headers
 
-    return JWTValidator(secret=secret).create_token(subject="USR-1", **extra_claims)
 
-
-def test_ingest_jwt_derives_org_id_and_user_id_from_token(monkeypatch, mock_ingest):
-    with _jwt_client(monkeypatch) as client:
-        token = _mint_token(org_id="org-a")
+def test_ingest_gateway_derives_identity_from_headers(monkeypatch, mock_ingest):
+    with _gateway_client(monkeypatch) as client:
         resp = client.post(
             "/v1/ingest",
             json={"input_paths": ["/data/doc.md"]},
-            headers={"Authorization": f"Bearer {token}"},
+            headers=_gateway_headers(account_id="org-a"),
         )
         assert resp.status_code == 202
         assert mock_ingest[0]["org_id"] == "org-a"
         assert mock_ingest[0]["uploaded_by"] == "USR-1"
 
 
-def test_ingest_jwt_rejects_org_id_that_does_not_match_token(monkeypatch, mock_ingest):
-    with _jwt_client(monkeypatch) as client:
-        token = _mint_token(org_id="org-a")
+def test_ingest_gateway_rejects_org_id_that_does_not_match(monkeypatch, mock_ingest):
+    with _gateway_client(monkeypatch) as client:
         resp = client.post(
             "/v1/ingest",
             json={"input_paths": ["/data/doc.md"], "org_id": "org-b"},
-            headers={"Authorization": f"Bearer {token}"},
+            headers=_gateway_headers(account_id="org-a"),
         )
         assert resp.status_code == 403
         assert mock_ingest == []  # never reached the pipeline
 
 
-def test_ingest_jwt_rejects_user_id_that_does_not_match_token(monkeypatch, mock_ingest):
-    with _jwt_client(monkeypatch) as client:
-        token = _mint_token(org_id="org-a")
+def test_ingest_gateway_rejects_user_id_that_does_not_match(monkeypatch, mock_ingest):
+    with _gateway_client(monkeypatch) as client:
         resp = client.post(
             "/v1/ingest",
             json={"input_paths": ["/data/doc.md"], "user_id": "someone-else"},
-            headers={"Authorization": f"Bearer {token}"},
+            headers=_gateway_headers(account_id="org-a"),
         )
         assert resp.status_code == 403
         assert mock_ingest == []

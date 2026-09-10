@@ -33,7 +33,7 @@ Two consequences worth knowing before changing anything here:
   * **A request with no caller token gets none attached.** The CLI, the tests
     and any in-process caller have no HTTP request behind them. Those calls
     will 401, which is correct — there is no user to bill or budget. Mint a
-    service token (``scripts/mint_token.py``) and bind it with
+    service token minted by auth-service and bind it with
     ``rag.caller_context.caller_token_scope`` for that kind of work.
   * **A background job carries a snapshot.** Ingestion re-binds the token that
     started it, so a job outliving that token's expiry will start failing its

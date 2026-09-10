@@ -62,11 +62,11 @@ def resolve_user_id(requested: str | None, request: Request) -> str:
     """
     principal = getattr(request.state, "principal", "anonymous")
     requested = (requested or "").strip()
-    if getattr(request.state, "auth_method", None) == "jwt":
+    if getattr(request.state, "auth_method", None) == "gateway":
         if requested and requested != principal:
             raise HTTPException(
                 status_code=403,
-                detail="user_id does not match the authenticated token's subject.",
+                detail="user_id does not match the caller's verified identity.",
             )
         return principal
     return requested or principal
@@ -98,12 +98,12 @@ def resolve_account_id(requested: str | None, request: Request) -> str:
     leaving this boundary to the client.
     """
     requested = (requested or "").strip()
-    if getattr(request.state, "auth_method", None) == "jwt":
+    if getattr(request.state, "auth_method", None) == "gateway":
         token_account_id = getattr(request.state, "account_id", "") or ""
         if requested and requested != token_account_id:
             raise HTTPException(
                 status_code=403,
-                detail="account_id does not match the authenticated token.",
+                detail="account_id does not match the caller's verified account.",
             )
         return token_account_id
     return requested

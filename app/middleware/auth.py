@@ -1,39 +1,38 @@
-"""Authentication + role-based authorization — one credential, one path.
+"""Authentication + role-based authorization — identity comes from the gateway.
 
-Every caller reaches this service through the API Gateway, which authenticates
-the request against auth-service before routing it and forwards the caller's
-token untouched. A token minted by auth-service is therefore the only
-credential this service accepts, and ``RAG_AUTH_ENABLED`` + ``RAG_JWT_SECRET``
-is the only way to configure authentication.
+This service does not validate tokens and holds no signing key. Every caller
+reaches it through the API gateway, which authenticates the request against
+auth-service (``GET /auth/me``), **strips** any identity headers the caller
+tried to send, and injects verified ones. This middleware reads those:
 
-**Static service API keys used to be accepted too, and are gone.**
-``KNOWLEDGE_API_KEYS`` dated from when applications called this service
-directly. A static key is a bearer credential with no expiry, no subject, no
-account scope and no revocation — and the shape of that mattered here, because
-``app/dependencies.py``'s ``resolve_account_id`` and ``resolve_user_id``
-deliberately trust a *request body* field for API-key callers, having no
-verified identity to check it against. Every isolation boundary in this service
-was therefore optional for anyone holding a key. Something that needs to call
-this service with no end-user behind it mints a JWT against the same shared
-secret (``scripts/mint_token.py``): the same trust root, with a subject, an
-expiry and an audience attached.
+  * ``X-User-ID``          → ``request.state.principal``
+  * ``X-Is-Admin``         → ``request.state.role`` ("admin" when "true", else
+    "user"); only "admin" reaches the admin routes (``app/dependencies.py``'s
+    ``require_admin``). auth-service derives it from the account the token is
+    scoped to.
+  * ``X-Account-ID``       → ``request.state.account_id``, the hard isolation
+    boundary ``resolve_account_id`` enforces instead of trusting a
+    client-supplied field.
 
-The verified token supplies:
+**Why not verify the JWT here.** It used to. That required ``RAG_JWT_SECRET``
+to hold the same signing key as auth-service and llm-gateway — three copies of
+one secret, kept in sync by hand, which had already drifted apart. Local
+verification also cannot see auth-service's revocation list, so a logged-out
+token kept working here until it expired. The gateway asks auth-service, which
+checks signature, expiry *and* revocation, and caches the answer.
 
-  * ``sub`` → ``request.state.principal``
-  * ``role`` → ``request.state.role``, defaulting to "user"; only "admin"
-    reaches the admin routes (``app/dependencies.py``'s ``require_admin``).
-    auth-service derives it from the account the token is scoped to.
-  * ``account_id`` → ``request.state.account_id``, the hard isolation boundary
-    ``resolve_account_id`` enforces instead of trusting a client-supplied
-    field.
+**The trade this makes.** Trusting a header is only sound while the caller
+cannot set it. The gateway's unconditional strip guarantees that for traffic
+through the gateway — and nothing else does. A deployment that leaves this
+service reachable on its own URL lets anyone send ``X-Account-ID`` and read
+another account's data. Restrict it to the gateway (on Vercel: Deployment
+Protection) — the startup warning below fires when ``RAG_AUTH_ENABLED`` is
+false, but nothing can detect direct reachability from inside the process.
 
-With ``RAG_AUTH_ENABLED`` false the API is **open** and every request is
-"anonymous" with role "admin" — the local-development and test default, and
-wrong for anything reachable off localhost. ``main.py`` logs a startup warning,
-and this is now the *only* thing standing between a deployment and an open
-door: with API keys removed there is no second mechanism that might happen to
-be configured.
+**Static service API keys are gone too** (``KNOWLEDGE_API_KEYS``). A static key
+was a bearer credential with no expiry, no subject, no account scope and no
+revocation. Something that needs to call this service with no end user behind
+it goes through the gateway like everything else.
 
 Health and docs paths are always public so orchestrator probes work before any
 credential is provisioned.
@@ -47,7 +46,6 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
-from rag.auth import InvalidTokenError, JWTValidator
 from rag.caller_context import caller_token_scope
 from rag.config import settings as rag_settings
 
@@ -66,17 +64,22 @@ def _is_public(path: str) -> bool:
     return path == "/" or path.startswith(PUBLIC_PATH_PREFIXES)
 
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, validator: JWTValidator | None = None) -> None:
-        super().__init__(app)
-        # Left as None so the validator is built from *current* settings on each
-        # use. Binding one at construction time would freeze the secret at
-        # import order, which breaks any deployment that enables JWT after the
-        # app object exists.
-        self._validator = validator
+def _identity(request: Request) -> tuple[str, str, bool]:
+    """(user_id, account_id, is_admin) as the gateway asserted them.
 
-    def _jwt_validator(self) -> JWTValidator:
-        return self._validator or JWTValidator()
+    Read fresh from headers on every request rather than cached anywhere: the
+    gateway re-derives them per request from its introspection cache, and this
+    service should never hold an opinion about identity that outlives one call.
+    """
+    user_id = (request.headers.get("x-user-id") or "").strip()
+    account_id = (request.headers.get("x-account-id") or "").strip()
+    is_admin = (request.headers.get("x-is-admin") or "").strip().lower() == "true"
+    return user_id, account_id, is_admin
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app) -> None:
+        super().__init__(app)
 
     async def _proceed(self, request, call_next, caller_token=""):
         """Run the rest of the stack with the caller's token bound.
@@ -103,37 +106,38 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if authorization[:7].lower() == "bearer "
             else ""
         )
+        user_id, account_id, is_admin = _identity(request)
 
-        # ── open mode: no JWT secret configured ────────────────────────────
+        # ── open mode: no gateway in front ─────────────────────────────────
         if not rag_settings.auth_enabled:
-            request.state.principal = "anonymous"
-            request.state.role = "admin"
-            # Nothing was verified here, but the token still travels: the
-            # gateway in front already checked it, and it is what identifies
-            # the user on this service's own outbound calls.
+            request.state.principal = user_id or "anonymous"
+            # "user", NOT "admin". This branch used to grant admin to every
+            # caller, which made /v1/stats and /v1/config world-readable on any
+            # deployment that had not turned auth on yet — the opposite of what
+            # a disabled-auth default should do.
+            request.state.role = "admin" if is_admin else "user"
+            # Nothing was verified, so account_id stays unset and
+            # resolve_account_id falls back to the request body — see its
+            # docstring. Local development only.
             return await self._proceed(request, call_next, bearer)
 
-        if not bearer:
+        # ── enforced: the gateway must have said who this is ───────────────
+        if not user_id:
             return _unauthorized(
-                "This endpoint requires authentication. Send "
-                "'Authorization: Bearer <jwt>' — obtain a token by signing in "
-                "through the auth service behind the API gateway."
+                "This endpoint is reachable only through the API gateway, which "
+                "supplies the caller's verified identity. Sign in through the "
+                "auth service and call the gateway rather than this service "
+                "directly."
             )
 
-        try:
-            claims = self._jwt_validator().validate(bearer)
-        except InvalidTokenError as exc:
-            logger.warning("JWT rejected on %s: %s", request.url.path, exc)
-            return _unauthorized(str(exc))
-
-        request.state.principal = claims.sub
-        request.state.role = claims.extra.get("role") or "user"
-        # The application (auth-service app account) this token is scoped to —
-        # the isolation boundary, taken ONLY from the verified token and never
-        # from a request body/query field. See
+        request.state.principal = user_id
+        request.state.role = "admin" if is_admin else "user"
+        # The application (auth-service app account) this caller is scoped to —
+        # the isolation boundary, taken ONLY from the gateway's verified header
+        # and never from a request body/query field. See
         # app/dependencies.py::resolve_account_id.
-        request.state.account_id = claims.extra.get("account_id") or ""
-        request.state.auth_method = "jwt"
+        request.state.account_id = account_id
+        request.state.auth_method = "gateway"
         return await self._proceed(request, call_next, bearer)
 
 

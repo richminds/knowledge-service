@@ -49,18 +49,18 @@ def test_resolve_user_id_trusts_explicit_value_when_auth_disabled():
 
 # ── resolve_user_id: JWT-authenticated end user — identity is the token's sub
 
-def test_resolve_user_id_jwt_uses_token_subject_when_omitted():
-    request = _request(principal="USR-1", auth_method="jwt")
+def test_resolve_user_id_gateway_uses_token_subject_when_omitted():
+    request = _request(principal="USR-1", auth_method="gateway")
     assert resolve_user_id(None, request) == "USR-1"
 
 
-def test_resolve_user_id_jwt_allows_matching_explicit_value():
-    request = _request(principal="USR-1", auth_method="jwt")
+def test_resolve_user_id_gateway_allows_matching_explicit_value():
+    request = _request(principal="USR-1", auth_method="gateway")
     assert resolve_user_id("USR-1", request) == "USR-1"
 
 
-def test_resolve_user_id_jwt_rejects_mismatched_explicit_value():
-    request = _request(principal="USR-1", auth_method="jwt")
+def test_resolve_user_id_gateway_rejects_mismatched_explicit_value():
+    request = _request(principal="USR-1", auth_method="gateway")
     with pytest.raises(HTTPException) as exc_info:
         resolve_user_id("USR-2", request)
     assert exc_info.value.status_code == 403

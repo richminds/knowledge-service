@@ -1,10 +1,15 @@
 """Auth middleware, exercised end-to-end against a real app instance.
 
-A JWT is the only credential this service accepts. Static service API keys
-(``KNOWLEDGE_API_KEYS``) were removed once every caller began arriving through
-the API Gateway with a token auth-service had already verified — see
-``app/middleware/auth.py`` for why a second, weaker credential path was worth
-deleting rather than keeping.
+This service validates nothing itself. The API gateway authenticates the
+caller against auth-service, strips whatever identity headers the caller sent,
+and injects verified ones; this middleware reads those. So these tests send
+``X-User-ID`` / ``X-Account-ID`` / ``X-Is-Admin`` directly — which is exactly
+what the gateway does, and exactly what an attacker could do if the service
+were reachable without the gateway in front (see app/middleware/auth.py).
+
+Static service API keys (``KNOWLEDGE_API_KEYS``) and local JWT validation
+(``RAG_JWT_SECRET``) were both removed — see ``app/middleware/auth.py`` for
+why a second, weaker credential path was worth deleting rather than keeping.
 
 Uses GET /v1/ingest/{job_id} against a nonexistent job — that route reaches
 the in-memory job registry (no MongoDB / LLM Gateway needed), so a 404 proves
@@ -24,79 +29,62 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-SECRET = "test-secret-that-is-long-enough-for-hs256"
 
-
-def _jwt_client(monkeypatch) -> TestClient:
-    """A client against an app with JWT enforcement switched on."""
+def _enforced_client(monkeypatch) -> TestClient:
+    """A client against an app with gateway identity enforced."""
     import rag.config as rag_config
 
     monkeypatch.setattr(rag_config.settings, "auth_enabled", True)
-    monkeypatch.setattr(rag_config.settings, "jwt_secret", SECRET)
 
     from app.main import create_app
 
     return TestClient(create_app())
 
 
-def _token(**claims) -> str:
-    """Mint a token this service will accept, with the given extra claims."""
-    from rag.auth import JWTValidator
-
-    return JWTValidator(secret=SECRET).create_token(
-        claims.pop("subject", "USR-1"), **claims
-    )
-
-
-def _bearer(token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {token}"}
+def _identity(user_id: str = "USR-1", account_id: str = "", admin: bool = False) -> dict:
+    """The headers the gateway injects for a verified caller."""
+    headers = {"X-User-ID": user_id, "X-Authenticated-Via": "api-gateway"}
+    if account_id:
+        headers["X-Account-ID"] = account_id
+    if admin:
+        headers["X-Is-Admin"] = "true"
+    return headers
 
 
 # ---------------------------------------------------------------------------
 # Enforcement
 # ---------------------------------------------------------------------------
 
-def test_missing_credentials_rejected_when_auth_enabled(monkeypatch):
-    with _jwt_client(monkeypatch) as client:
+def test_missing_identity_rejected_when_auth_enabled(monkeypatch):
+    with _enforced_client(monkeypatch) as client:
         resp = client.get("/v1/ingest/does-not-exist")
         assert resp.status_code == 401
         assert resp.json()["error"]["code"] == "unauthorized"
 
 
-def test_a_garbage_token_is_rejected(monkeypatch):
-    with _jwt_client(monkeypatch) as client:
-        resp = client.get("/v1/ingest/does-not-exist", headers=_bearer("not-a-jwt"))
+def test_a_bearer_token_alone_does_not_authenticate(monkeypatch):
+    """The token still travels — this service forwards it on its own outbound
+    calls — but it is no longer what identifies the caller. Only the gateway's
+    injected headers are, so a raw token without them is not a credential
+    here."""
+    with _enforced_client(monkeypatch) as client:
+        resp = client.get(
+            "/v1/ingest/does-not-exist",
+            headers={"Authorization": "Bearer whatever.this.is"},
+        )
         assert resp.status_code == 401
 
 
-def test_a_token_signed_with_another_secret_is_rejected(monkeypatch):
-    from rag.auth import JWTValidator
-
-    forged = JWTValidator(secret="a-different-secret-entirely").create_token("USR-1")
-    with _jwt_client(monkeypatch) as client:
-        assert client.get(
-            "/v1/ingest/does-not-exist", headers=_bearer(forged)
-        ).status_code == 401
-
-
-def test_an_expired_token_is_rejected(monkeypatch):
-    with _jwt_client(monkeypatch) as client:
-        expired = _token(ttl_seconds=-60)
-        assert client.get(
-            "/v1/ingest/does-not-exist", headers=_bearer(expired)
-        ).status_code == 401
-
-
-def test_a_valid_token_reaches_the_route(monkeypatch):
-    with _jwt_client(monkeypatch) as client:
-        resp = client.get("/v1/ingest/does-not-exist", headers=_bearer(_token()))
+def test_gateway_identity_reaches_the_route(monkeypatch):
+    with _enforced_client(monkeypatch) as client:
+        resp = client.get("/v1/ingest/does-not-exist", headers=_identity())
         assert resp.status_code == 404  # past auth; the job simply doesn't exist
 
 
 def test_an_api_key_header_no_longer_authenticates_anything(monkeypatch):
     """The mechanism is gone, not merely unconfigured: a caller still sending
     X-API-Key gets a 401 rather than quietly reaching the route."""
-    with _jwt_client(monkeypatch) as client:
+    with _enforced_client(monkeypatch) as client:
         resp = client.get(
             "/v1/ingest/does-not-exist", headers={"X-API-Key": "secret-key"}
         )
@@ -104,7 +92,7 @@ def test_an_api_key_header_no_longer_authenticates_anything(monkeypatch):
 
 
 def test_health_is_always_public_even_when_auth_configured(monkeypatch):
-    with _jwt_client(monkeypatch) as client:
+    with _enforced_client(monkeypatch) as client:
         assert client.get("/health/live").status_code == 200
 
 
@@ -112,27 +100,31 @@ def test_health_is_always_public_even_when_auth_configured(monkeypatch):
 # Role
 # ---------------------------------------------------------------------------
 
-def test_admin_routes_reject_an_ordinary_role(monkeypatch):
-    with _jwt_client(monkeypatch) as client:
-        resp = client.get("/v1/config", headers=_bearer(_token(role="user")))
+def test_admin_routes_reject_an_ordinary_caller(monkeypatch):
+    with _enforced_client(monkeypatch) as client:
+        resp = client.get("/v1/config", headers=_identity())
         assert resp.status_code == 403
 
 
-def test_admin_routes_reject_a_token_with_no_role_claim(monkeypatch):
-    """Absent means "user", never "admin" — a token minted before the claim
-    existed must not open an admin route."""
-    with _jwt_client(monkeypatch) as client:
-        assert client.get(
-            "/v1/config", headers=_bearer(_token())
-        ).status_code == 403
+def test_admin_routes_reject_a_falsey_is_admin_header(monkeypatch):
+    """Anything other than "true" means "user", never "admin" — so a header
+    the gateway did not set, or set to something else, cannot open an admin
+    route."""
+    with _enforced_client(monkeypatch) as client:
+        headers = _identity() | {"X-Is-Admin": "false"}
+        assert client.get("/v1/config", headers=headers).status_code == 403
+
+        headers = _identity() | {"X-Is-Admin": "1"}
+        assert client.get("/v1/config", headers=headers).status_code == 403
 
 
-def test_admin_routes_accept_the_admin_role(monkeypatch):
-    """auth-service mints role="admin" for a session scoped to the admin app
-    account. Without that claim these routes are unreachable for everyone,
-    which is what removing API keys would otherwise have caused."""
-    with _jwt_client(monkeypatch) as client:
-        resp = client.get("/v1/config", headers=_bearer(_token(role="admin")))
+def test_admin_routes_accept_the_admin_header(monkeypatch):
+    """The gateway sets X-Is-Admin from auth-service's is_admin, which is
+    derived from the account the token is scoped to. Without it these routes
+    are unreachable for everyone, which is what removing API keys would
+    otherwise have caused."""
+    with _enforced_client(monkeypatch) as client:
+        resp = client.get("/v1/config", headers=_identity(admin=True))
         assert resp.status_code == 200
 
 
@@ -145,3 +137,11 @@ def test_open_mode_when_auth_is_disabled(api):
     default, and now the only remaining way for this service to be open."""
     resp = api.get("/v1/ingest/does-not-exist")
     assert resp.status_code == 404
+
+
+def test_open_mode_does_not_grant_admin(api):
+    """Regression: disabling auth used to set role="admin" for every caller,
+    which made /v1/config and /v1/stats world-readable on any deployment that
+    had not turned auth on yet. Disabled auth must mean *less* access, not
+    total access."""
+    assert api.get("/v1/config").status_code == 403
