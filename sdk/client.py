@@ -1,8 +1,8 @@
 """HTTP client for the Knowledge Service.
 
 Drop this into any application that wants document ingestion and RAG query
-without embedding the retrieval pipeline itself — Portless (the application
-this service's RAG pipeline was extracted from) or any future application.
+without embedding the retrieval pipeline itself — the application this
+service's RAG pipeline was extracted from, or any future application.
 Mirrors the calling convention of the LLM Gateway's own ``sdk/client.py``:
 one credential, one connection pool, plain dataclasses back.
 
@@ -12,7 +12,7 @@ Usage::
 
     client = KnowledgeServiceClient(
         base_url="https://knowledge-service.internal",
-        api_key="sk-live-...",       # identifies your application
+        jwt="eyJhbGciOi...",         # the caller's auth-service token
     )
 
     job = await client.ingest(["/data/docs/policy.pdf"])
@@ -106,14 +106,11 @@ class KnowledgeServiceClient:
     def __init__(
         self,
         base_url: str,
-        api_key: str = "",
         jwt: str = "",
         timeout: float = DEFAULT_TIMEOUT,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         headers: dict[str, str] = {}
-        if api_key:
-            headers["X-API-Key"] = api_key
         if jwt:
             headers["Authorization"] = f"Bearer {jwt}"
 

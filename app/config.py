@@ -55,22 +55,6 @@ class KnowledgeServiceSettings(BaseSettings):
     # actually own, never leave it open.
     cors_origin_regex: str = ""
 
-    # ------------------------------------------------------------- auth
-    # Static service API keys — the simplest cloud auth, same shape as the LLM
-    # Gateway's GATEWAY_API_KEYS. Comma-separated list of "name:key" or
-    # "name:key:role" triples (the name is used as the default caller/principal),
-    # or bare keys. role defaults to "user" when omitted — only "admin" unlocks
-    # the admin routes (GET /v1/stats, /v1/config).
-    #   KNOWLEDGE_API_KEYS=portless-backend:sk-live-abc,other-app:sk-live-def:admin
-    # Callers send it as `X-API-Key: <key>` or `Authorization: Bearer <key>`.
-    #
-    # JWT auth is configured separately on the core settings
-    # (RAG_AUTH_ENABLED / RAG_JWT_SECRET) and is checked when no API key matches.
-    #
-    # With NEITHER configured the API is open — fine for localhost, never for
-    # a deployed service. main.py logs a loud warning at startup in that case.
-    api_keys: str = ""
-
     # ------------------------------------------------------------- limits
     # Cheap structural guardrails applied before any pipeline work starts.
     max_question_length: int = 4_000
@@ -84,27 +68,6 @@ class KnowledgeServiceSettings(BaseSettings):
     expose_config_endpoint: bool = True
 
     # ---------------------------------------------------------- derived
-
-    def parsed_api_keys(self) -> dict[str, tuple[str, str]]:
-        """Return {api_key: (principal_name, role)}. Empty when unconfigured.
-
-        Accepts "key", "name:key", or "name:key:role" — role defaults to
-        "user" when omitted.
-        """
-        out: dict[str, tuple[str, str]] = {}
-        for i, raw in enumerate(p.strip() for p in self.api_keys.split(",")):
-            if not raw:
-                continue
-            parts = [p.strip() for p in raw.split(":")]
-            if len(parts) == 1:
-                name, key, role = f"service-{i + 1}", parts[0], "user"
-            elif len(parts) == 2:
-                name, key, role = parts[0], parts[1], "user"
-            else:
-                name, key, role = parts[0], parts[1], (parts[2] or "user")
-            if key:
-                out[key] = (name or f"service-{i + 1}", role)
-        return out
 
     def parsed_cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

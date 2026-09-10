@@ -1,7 +1,7 @@
 [project]
 name = "knowledge-service"
 version = "1.0.0"
-description = "Generic RAG service — document ingestion + hybrid retrieval + cited generation over MongoDB Atlas. HTTP service extracted from Portless's shared/rag, calling an LLM Gateway for every model invocation."
+description = "Generic RAG service — document ingestion + hybrid retrieval + cited generation over MongoDB Atlas. HTTP service extracted from a monolith's shared/rag, calling an LLM Gateway for every model invocation."
 requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.111",

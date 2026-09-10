@@ -1,7 +1,7 @@
 """Knowledge Service RAG core — MongoDB Atlas vector store + LLM Gateway generation.
 
 This package is the portable, framework-free core extracted from
-``portless/backend/shared/rag``. It holds no FastAPI dependency and no
+``backend/shared/rag``. It holds no FastAPI dependency and no
 provider SDK — every LLM and embedding call goes out over HTTP to an LLM
 Gateway deployment (see ``rag/llm_gateway_client.py``). ``app/`` is the thin
 HTTP layer wired on top of it, exactly mirroring the ``features/`` + ``app/``

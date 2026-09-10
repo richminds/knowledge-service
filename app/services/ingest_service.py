@@ -1,7 +1,7 @@
 """Ingestion orchestration — job registry, background execution, file uploads.
 
 The job registry is a process-local dict, exactly matching the source
-implementation (``portless/backend/shared/rag/src/router.py``): status is
+implementation (``backend/shared/rag/src/router.py``): status is
 lost on restart and not shared across workers. ``rag/config.py`` declares
 ``RAG_INGESTION_JOBS_COLLECTION`` for a future MongoDB-backed registry, but it
 is intentionally not wired up here — this is a faithful port, not a rewrite.
@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile, status
+
+from rag.caller_context import caller_token_scope, get_caller_token
 
 from rag.file_store import get_file_store
 from rag.ingestion import ingest
@@ -62,6 +64,10 @@ async def start_ingest(
         uploaded_by=uploaded_by,
         org_id=org_id,
         account_id=account_id,
+        # Captured now, while the request context still exists. Background
+        # tasks run after the response has unwound the middleware stack, by
+        # which point the ambient token has already been reset.
+        caller_token=get_caller_token(),
     )
     return IngestResponse(
         job_id=job_id,
@@ -158,6 +164,10 @@ async def upload_and_ingest(
         uploaded_by=uploaded_by,
         org_id=org_id,
         account_id=account_id,
+        # Captured now, while the request context still exists. Background
+        # tasks run after the response has unwound the middleware stack, by
+        # which point the ambient token has already been reset.
+        caller_token=get_caller_token(),
     )
     return IngestResponse(
         job_id=job_id,
@@ -185,17 +195,28 @@ async def _run_ingest_job(
     uploaded_by: str = "",
     org_id: str = "",
     account_id: str = "",
+    caller_token: str = "",
 ) -> None:
-    """Execute ingestion in the background and update the job registry."""
+    """Execute ingestion in the background and update the job registry.
+
+    ``caller_token`` is re-bound for the life of the job because embedding
+    every chunk goes out through the API Gateway, which bills and budgets the
+    call against the user who submitted the upload (see
+    rag/llm_gateway_client.py). It is a snapshot taken when the job was
+    queued: a long ingest that outlives the token's expiry will start failing
+    its embedding calls, and the job is marked failed like any other error.
+    Shorten documents or lengthen AUTH_ACCESS_TTL_MINUTES if that bites.
+    """
     _jobs[job_id]["status"] = "running"
     try:
-        result = await ingest(
-            input_paths=input_paths,
-            chunk_strategy=chunk_strategy,
-            uploaded_by=uploaded_by,
-            org_id=org_id,
-            account_id=account_id,
-        )  # type: ignore[arg-type]
+        with caller_token_scope(caller_token):
+            result = await ingest(
+                input_paths=input_paths,
+                chunk_strategy=chunk_strategy,
+                uploaded_by=uploaded_by,
+                org_id=org_id,
+                account_id=account_id,
+            )  # type: ignore[arg-type]
         _jobs[job_id].update(
             {
                 "status": "completed",

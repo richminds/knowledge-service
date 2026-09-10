@@ -19,7 +19,7 @@ Usage::
 
     client = RemoteLLMClient(
         base_url="https://llm-gateway.internal",
-        api_key="sk-live-...",       # identifies your application
+        jwt="eyJhbGciOi...",         # the caller's auth-service token
     )
     response = await client.chat(
         [{"role": "user", "content": "Summarise this incident report."}],
@@ -137,20 +137,23 @@ class RemoteLLMClient:
     def __init__(
         self,
         base_url: str,
-        api_key: str = "",
         jwt: str = "",
         timeout: float = DEFAULT_TIMEOUT,
         client: httpx.AsyncClient | None = None,
+        auth: httpx.Auth | None = None,
     ) -> None:
+        # `auth` is a local addition to the vendored copy: `jwt` is fixed at
+        # construction, which cannot express "whichever user is being served
+        # right now". An httpx.Auth is consulted per request, so
+        # one pooled client can carry a different caller's credential on every
+        # call. See rag/llm_gateway_client.py.
         headers: dict[str, str] = {"Content-Type": "application/json"}
-        if api_key:
-            headers["X-API-Key"] = api_key
         if jwt:
             headers["Authorization"] = f"Bearer {jwt}"
 
         self._base_url = base_url.rstrip("/")
         self._client = client or httpx.AsyncClient(
-            base_url=self._base_url, headers=headers, timeout=timeout
+            base_url=self._base_url, headers=headers, timeout=timeout, auth=auth
         )
         self._owns_client = client is None
 
@@ -300,16 +303,29 @@ class GatewayEmbeddingsClient:
     are provided for callers already inside an event loop.
     """
 
-    def __init__(self, base_url: str, api_key: str = "", timeout: float = DEFAULT_TIMEOUT) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        jwt: str = "",
+        timeout: float = DEFAULT_TIMEOUT,
+        auth: httpx.Auth | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._headers = {"Content-Type": "application/json"}
-        if api_key:
-            self._headers["X-API-Key"] = api_key
+        if jwt:
+            self._headers["Authorization"] = f"Bearer {jwt}"
         self._timeout = timeout
+        # Local addition, as on RemoteLLMClient above — and load-bearing here,
+        # since this class builds a fresh client per call and so has no other
+        # place a per-request credential could be attached.
+        self._auth = auth
 
     def _post(self, texts: list[str], input_type: str) -> list[list[float]]:
         with httpx.Client(
-            base_url=self._base_url, headers=self._headers, timeout=self._timeout
+            base_url=self._base_url,
+            headers=self._headers,
+            timeout=self._timeout,
+            auth=self._auth,
         ) as c:
             response = c.post(
                 "/v1/embeddings", json={"input": texts, "input_type": input_type}
@@ -319,7 +335,10 @@ class GatewayEmbeddingsClient:
 
     async def _apost(self, texts: list[str], input_type: str) -> list[list[float]]:
         async with httpx.AsyncClient(
-            base_url=self._base_url, headers=self._headers, timeout=self._timeout
+            base_url=self._base_url,
+            headers=self._headers,
+            timeout=self._timeout,
+            auth=self._auth,
         ) as c:
             response = await c.post(
                 "/v1/embeddings", json={"input": texts, "input_type": input_type}

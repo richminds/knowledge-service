@@ -32,16 +32,14 @@ async def get_stats() -> StatsResponse:
 
 def get_config() -> ConfigResponse:
     """Resolved, non-secret configuration — mirrors the LLM Gateway's own
-    GET /v1/config. Never includes api_keys, jwt_secret, or gateway_api_key."""
+    GET /v1/config. Never includes jwt_secret."""
     return ConfigResponse(
         service={
             "environment": gateway_settings.environment,
             "log_format": gateway_settings.log_format,
             "docs_enabled": gateway_settings.docs_enabled,
             "cors_origins": gateway_settings.parsed_cors_origins(),
-            "auth_configured": (
-                bool(gateway_settings.parsed_api_keys()) or rag_settings.auth_enabled
-            ),
+            "auth_configured": rag_settings.auth_enabled,
         },
         rag={
             "mongo_db_name": rag_settings.mongo_db_name,

@@ -3,7 +3,7 @@
 Runs the same LangGraph pipelines the API serves, in-process, against the
 configured MongoDB and LLM Gateway. Useful for local ingestion/testing
 without standing up the FastAPI app. Ported from the source implementation's
-``practice-rag`` CLI (``portless/backend/shared/rag/src/cli.py``).
+``practice-rag`` CLI (``backend/shared/rag/src/cli.py``).
 
 Usage::
 
@@ -20,12 +20,25 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from rag.caller_context import bind_caller_token  # noqa: E402
 from rag.ingestion import build_ingestion_graph  # noqa: E402
 from rag.retrieval import build_query_graph  # noqa: E402
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Knowledge Service RAG CLI")
+    parser.add_argument(
+        "--token",
+        default="",
+        help=(
+            "Bearer token for the outbound LLM Gateway calls. Every embedding "
+            "and generation this CLI triggers goes out through the API Gateway, "
+            "which authenticates it like any other traffic — and there is no "
+            "HTTP request here to take a caller's token from. Mint one with "
+            "scripts/mint_token.py. Omit it only when RAG_GATEWAY_BASE_URL "
+            "points at a gateway that is not enforcing auth."
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     ingest_parser = subparsers.add_parser(
@@ -58,6 +71,11 @@ def main() -> None:
     ask_parser.add_argument("--team", default=None, help="Team ID for authorization filtering")
 
     args = parser.parse_args()
+
+    # Bound for the life of the process rather than through a scope: this
+    # CLI performs one operation and exits, so there is no later request the
+    # token could leak into.
+    bind_caller_token(args.token)
 
     if args.command == "ingest":
         if not args.path:

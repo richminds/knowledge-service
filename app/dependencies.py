@@ -52,11 +52,13 @@ def resolve_user_id(requested: str | None, request: Request) -> str:
     token's ``sub`` — a request body/form cannot claim to be a different
     user; a mismatching ``user_id`` is rejected rather than silently
     overridden (a match, e.g. a client echoing back what it already knows, is
-    a no-op). For a trusted service-to-service caller (static API key, or
-    auth disabled entirely) the caller may assert an end-user ID explicitly —
-    a calling application acting on behalf of many end-users (e.g. Portless)
-    passes its own end-user's ID this way; a caller with no such concept just
-    gets its own principal recorded. Mirrors ``resolve_org_id`` below.
+    a no-op).
+
+    The other branch is now reached only with ``RAG_AUTH_ENABLED`` false — the
+    local-development and test mode — where the request body is taken at its
+    word because there is no verified identity to check it against. That used
+    to be reachable in production by any holder of a static API key, which is
+    one of the reasons those were removed. Mirrors ``resolve_account_id``.
     """
     principal = getattr(request.state, "principal", "anonymous")
     requested = (requested or "").strip()
@@ -87,10 +89,13 @@ def resolve_account_id(requested: str | None, request: Request) -> str:
 
     A user can belong to several applications and picks one at sign-in
     (auth-service POST /auth/me/account), which bakes the choice into the
-    token. So, exactly like ``resolve_org_id``, a JWT caller's account comes
-    ONLY from the verified ``account_id`` claim and a mismatching client-
-    supplied value is rejected; a trusted service-to-service caller (static
-    API key, or auth disabled) may assert one explicitly.
+    token. So a JWT caller's account comes ONLY from the verified
+    ``account_id`` claim, and a mismatching client-supplied value is rejected.
+
+    The fallback — believing the request body — now applies only with
+    ``RAG_AUTH_ENABLED`` false, where nothing has been verified at all. There
+    is no longer a credential that authenticates a caller in production while
+    leaving this boundary to the client.
     """
     requested = (requested or "").strip()
     if getattr(request.state, "auth_method", None) == "jwt":

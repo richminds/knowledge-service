@@ -1,11 +1,12 @@
 """Knowledge Service — FastAPI application.
 
-A standalone, generic RAG service extracted from Portless's
-``backend/shared/rag`` so it can be reused by Portless and any other
-application, over HTTP, instead of being embedded in one codebase. Every LLM
-and embedding call is made through a deployed LLM Gateway instance — this
-service holds no provider credential and imports no provider SDK (see
-``rag/llm_gateway_client.py``).
+A standalone, generic RAG service extracted from an application's
+``backend/shared/rag`` so it can be reused by any application, over HTTP,
+instead of being embedded in one codebase. Every LLM and embedding call goes
+out through the API Gateway to an LLM Gateway, carrying the calling user's own
+token so the gateway can authenticate, budget and meter it like any other
+traffic — this service holds no provider credential and imports no provider SDK
+(see ``rag/llm_gateway_client.py``).
 
 Startup ensures MongoDB indexes exist (vector search index, regular indexes,
 graph-store indexes when enabled) — best-effort, matching the source
@@ -58,12 +59,13 @@ def _warn_on_open_access() -> None:
     instance it means anyone who finds the URL can read/write the knowledge
     base and spend the LLM Gateway's quota on this service's behalf.
     """
-    if gateway_settings.parsed_api_keys() or rag_settings.auth_enabled:
+    if rag_settings.auth_enabled:
         return
     message = (
-        "AUTH IS DISABLED — every endpoint is open. Set KNOWLEDGE_API_KEYS "
-        "(recommended for service-to-service) or RAG_AUTH_ENABLED=true + "
-        "RAG_JWT_SECRET before exposing this service."
+        "AUTH IS DISABLED — every endpoint is open, and account isolation "
+        "falls back to trusting the request body. Set RAG_AUTH_ENABLED=true "
+        "+ RAG_JWT_SECRET (matching auth-service's AUTH_JWT_SECRET) before "
+        "exposing this service. It is the only mechanism there is."
     )
     if gateway_settings.is_production:
         logger.error("!!! %s", message)

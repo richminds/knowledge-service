@@ -6,12 +6,12 @@ context) and retrieval (hybrid semantic + keyword + optional graph + optional
 web search, reranking, knee-point selection, prompt-injection screening, cited
 generation with evaluation metrics) over MongoDB Atlas.
 
-Extracted from Portless's `backend/shared/rag` so any application — Portless
-or otherwise — can use it over HTTP instead of embedding the pipeline in its
-own codebase. It is a 1:1 feature port: every retrieval leg, every chunking
-strategy, every endpoint the source implementation had, this service has too.
-Portless's own copy of the code is untouched; this service is additive until
-a follow-up migrates Portless to call it instead.
+Extracted from an application's `backend/shared/rag` so any application can
+use it over HTTP instead of embedding the pipeline in its own codebase. It is
+a 1:1 feature port: every retrieval leg, every chunking strategy, every
+endpoint the source implementation had, this service has too. The source
+application's own copy of the code is untouched; this service is additive
+until a follow-up migrates that application to call it instead.
 
 This service holds **no LLM provider API key** and imports **no provider
 SDK**. Every embedding and chat-completion call is made over HTTP to a
@@ -74,8 +74,35 @@ Concretely: `rag/embeddings.py` and `rag/llm.py` never call OpenAI/Anthropic/
 Gemini/Groq — they call `rag/llm_gateway_client.py`, which holds one
 `RemoteLLMClient` and one `GatewayEmbeddingsClient` (vendored from the
 gateway's own `sdk/client.py`, per that module's docstring: "drop this into
-any application that should reach an LLM through the gateway"). Point
-`RAG_GATEWAY_BASE_URL` / `RAG_GATEWAY_API_KEY` at a deployed instance.
+any application that should reach an LLM through the gateway").
+
+### ...and through the API Gateway to get there
+
+`RAG_GATEWAY_BASE_URL` points at the **API gateway's** `/api/llm` prefix, not
+at llm-gateway directly. The gateway strips the prefix and forwards, and that
+extra hop is deliberate: it makes the gateway the single place where
+authentication, per-user and per-account rate limits, budgets and usage
+metering are enforced. Called directly, RAG traffic arrived as one static
+service key — every user's LLM spend landed in the same bucket, no per-user
+budget could apply to it, and the gateway's metering never saw it.
+
+So each outbound call carries **the caller's own token**, not a service
+credential. It is picked up ambiently from `rag/caller_context.py`, bound by
+`app/middleware/auth.py` from the token the gateway forwarded, and attached per
+request by an `httpx.Auth` — so one pooled connection can serve a different
+user on every call. A service API key that authenticated a request *here* is
+deliberately **not** forwarded: it would authenticate as nobody upstream.
+
+Two consequences to know about:
+
+- **A call with no user behind it sends no credential and gets a 401.** The
+  CLI (`scripts/rag_cli.py`) and the test suite have no HTTP request. Point
+  `RAG_GATEWAY_BASE_URL` straight at an llm-gateway, with
+  `RAG_GATEWAY_API_KEY` set, for that kind of work.
+- **A background ingest carries a snapshot of the token that queued it.** A
+  job outliving that token's expiry starts failing its embedding calls and is
+  marked failed. Shorten the documents or lengthen auth-service's
+  `AUTH_ACCESS_TTL_MINUTES` if that bites.
 
 ## Endpoints
 
@@ -91,11 +118,11 @@ any application that should reach an LLM through the gateway"). Point
 | `GET` | `/v1/config` | admin | Resolved, non-secret configuration |
 | `GET` | `/health`, `/health/live`, `/health/ready` | none | Liveness/readiness (Mongo + LLM Gateway reachability) |
 
-"required" means any authenticated caller (a configured `KNOWLEDGE_API_KEYS`
-entry or a valid JWT) — there is no human-staff-only gate here, unlike the
-Portless-specific `require_portless` the source router used, because this
-service is meant to be called by any number of applications, not just one
-platform's staff UI. "admin" additionally requires `role=admin` on that
+"required" means any caller presenting a valid JWT — the only credential
+this service accepts — there is no human-staff-only gate here, unlike the
+platform-staff dependency the source router used, because this service is
+meant to be called by any number of applications, not just one platform's
+staff UI. "admin" additionally requires `role=admin` on that
 credential.
 
 ### Who uploaded what
@@ -106,7 +133,7 @@ retrieval's equivalent). It's recorded as `uploaded_by` on every resulting
 chunk's metadata, every parent-context document, and the GridFS file record
 (`GET /v1/files` returns it too) — provenance, not access control. When
 omitted, it defaults to the authenticated caller's own principal (the calling
-*application's* identity, e.g. `portless-backend`) rather than being left
+*application's* identity, e.g. `app-backend`) rather than being left
 blank, via `app/dependencies.py::resolve_user_id`.
 
 This is deliberately separate from `authorized_users`/`authorized_teams`
@@ -138,9 +165,10 @@ query field that disagrees is rejected with 403, never silently overridden
 (`app/dependencies.py::resolve_org_id`/`resolve_account_id`). This is what
 lets `account_id` reflect the application a user chose at sign-in
 (auth-service `POST /auth/me/account`) rather than anything the client asserts.
-For a **trusted service-to-service** caller (static `KNOWLEDGE_API_KEYS`, or
-auth disabled entirely) both may be asserted explicitly, since such a caller
-acts on behalf of many end-users.
+With `RAG_AUTH_ENABLED` false — local development and the test suite — there
+is no verified identity to check against, so a client-supplied value is taken
+at its word. That used to be reachable in production by any holder of a static
+`KNOWLEDGE_API_KEYS` entry, which is one of the reasons those were removed.
 
 `GET /v1/files` applies the same two boundaries to the GridFS listing, with
 the same fail-closed default: a caller supplying no `org_id`/`account_id` sees
@@ -151,7 +179,7 @@ only unscoped files, never another tenant's or application's.
 ```
 POST /v1/query
   → RequestContextMiddleware   (request ID, access log)
-  → AuthMiddleware             (API key or JWT → principal + role)
+  → AuthMiddleware             (JWT → principal + role + account_id)
   → query_controller → query_service → rag.retrieval.query()
       embed_query → semantic_search → keyword_search → graph_search → web_search
       → hybrid_fusion (RRF) → parent_child_expand → rerank → knee_point_select
@@ -210,6 +238,7 @@ rag/                          framework-free RAG core (no FastAPI import)
   config.py                     RAGSettings — env prefix RAG_
   auth.py                       JWTValidator (RAG_AUTH_ENABLED)
   log_context.py                contextvar request-ID correlation
+  caller_context.py             contextvar caller token, for outbound gateway calls
   mongo_connection.py           pooled Motor client, index management
   llm_gateway_sdk.py             vendored copy of llm-gateway's sdk/client.py
   llm_gateway_client.py          singleton RemoteLLMClient / GatewayEmbeddingsClient
@@ -267,12 +296,15 @@ pipeline does and which LLM Gateway it calls).
 
 - [ ] `RAG_MONGO_URI` set to an Atlas cluster (Atlas Vector Search requires
       Atlas, or an Atlas-compatible deployment with Search support)
-- [ ] `RAG_GATEWAY_BASE_URL` / `RAG_GATEWAY_API_KEY` point at a reachable,
-      already-deployed `llm-gateway` instance
+- [ ] `RAG_GATEWAY_BASE_URL` points at the **API gateway's** `/api/llm`
+      prefix (e.g. `https://<gateway>/api/llm`), so LLM traffic is
+      authenticated, budgeted and metered like everything else.
+      `RAG_GATEWAY_API_KEY` is only for pointing straight at an llm-gateway
 - [ ] `RAG_EMBEDDING_DIMENSIONS` matches that gateway's actual
       `LLM_EMBEDDING_DIMENSIONS` (mismatched dimensions corrupt the vector index)
-- [ ] `KNOWLEDGE_API_KEYS` or `RAG_AUTH_ENABLED` configured — otherwise the
-      service is open to anyone who finds the URL
+- [ ] `RAG_AUTH_ENABLED=true` + `RAG_JWT_SECRET` (matching auth-service's
+      `AUTH_JWT_SECRET`) — the only credential mechanism there is, so without
+      it the service is open to anyone who finds the URL
 - [ ] `KNOWLEDGE_DOCS_ENABLED=false` if the API is reachable from the public internet
 - [ ] Single worker / replica-based scaling until the ingestion job registry
       is MongoDB-backed (see Request flow above)

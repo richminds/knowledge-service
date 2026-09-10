@@ -10,7 +10,7 @@ the HTTP wrapper — exactly like ``features/config.py`` / ``app/config.py`` in
 the LLM Gateway this service was extracted from.
 
 Vector database: MongoDB Atlas with ``$vectorSearch`` aggregation — unchanged
-from the source implementation (``portless/backend/shared/rag``); no other
+from the source implementation (``backend/shared/rag``); no other
 vector DB is used.
 
 Embeddings and chat generation: this service holds NO provider API key and
@@ -134,14 +134,23 @@ class RAGSettings(BaseSettings):
 
     # ──────────────────────────────────────────────────────── LLM Gateway
     # This service holds no provider credential and imports no provider SDK —
-    # every embedding/chat call is an HTTP request to a deployed LLM Gateway
-    # instance (see rag/llm_gateway_client.py, rag/llm_gateway_sdk.py — the
-    # latter is a vendored copy of that project's sdk/client.py, exactly the
-    # way its own docstring says to consume it: "drop this into any
-    # application that should reach an LLM through the gateway"). Point this
-    # at your LLM Gateway deployment.
-    gateway_base_url: str = "http://localhost:8080"
-    gateway_api_key: str = ""
+    # every embedding/chat call is an HTTP request to an LLM Gateway (see
+    # rag/llm_gateway_client.py, rag/llm_gateway_sdk.py — the latter is a
+    # vendored copy of that project's sdk/client.py).
+    #
+    # Point this at the API GATEWAY's /api/llm prefix, not at llm-gateway
+    # itself. The gateway strips the prefix and forwards, and the extra hop is
+    # the point: it makes the gateway the single place where authentication,
+    # per-user and per-account rate limits, budgets and metering apply. Calling
+    # llm-gateway directly means RAG traffic arrives as one static service key,
+    # so every user's spend lands in the same bucket and no per-user budget can
+    # touch it.
+    #
+    # Each call carries the CALLER's token (rag/caller_context.py) — a JWT is
+    # the only credential anything on this platform accepts now. A request with
+    # no user behind it (the CLI, a test) has nothing to send and will 401;
+    # mint a service token with scripts/mint_token.py for that kind of work.
+    gateway_base_url: str = "http://localhost:8000/api/llm"
     gateway_timeout_seconds: float = 120.0
 
     # ──────────────────────────────────────────────────────── auth (JWT)

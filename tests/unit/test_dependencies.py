@@ -23,22 +23,22 @@ def test_require_admin_rejects_non_admin_role():
 
 
 # ── resolve_user_id: trusted caller (API key / auth disabled) ──────────────
-# The Portless-style pattern: a trusted service asserts an end-user ID on
+# The service-to-service pattern: a trusted service asserts an end-user ID on
 # behalf of one of its own users.
 
 def test_resolve_user_id_prefers_explicit_value_for_trusted_caller():
-    request = _request(principal="portless-backend", auth_method="api_key")
+    request = _request(principal="app-backend", auth_method="api_key")
     assert resolve_user_id("alice", request) == "alice"
 
 
 def test_resolve_user_id_falls_back_to_principal_when_absent():
-    request = _request(principal="portless-backend", auth_method="api_key")
-    assert resolve_user_id(None, request) == "portless-backend"
+    request = _request(principal="app-backend", auth_method="api_key")
+    assert resolve_user_id(None, request) == "app-backend"
 
 
 def test_resolve_user_id_falls_back_to_principal_when_blank():
-    request = _request(principal="portless-backend", auth_method="api_key")
-    assert resolve_user_id("   ", request) == "portless-backend"
+    request = _request(principal="app-backend", auth_method="api_key")
+    assert resolve_user_id("   ", request) == "app-backend"
 
 
 def test_resolve_user_id_trusts_explicit_value_when_auth_disabled():
