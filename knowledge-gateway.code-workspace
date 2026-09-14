@@ -20,6 +20,9 @@
 		},
 		{
 			"path": "../makemerich-backend"
+		},
+		{
+			"path": "../makemerich-frontend"
 		}
 	],
 	"settings": {}
