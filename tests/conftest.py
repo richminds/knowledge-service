@@ -18,6 +18,12 @@ os.environ.setdefault("KNOWLEDGE_ENVIRONMENT", "test")
 # Loopback + closed port: a request against this fails fast with "connection
 # refused" instead of a slow DNS timeout, and no test relies on it succeeding.
 os.environ.setdefault("RAG_GATEWAY_BASE_URL", "http://127.0.0.1:1")
+# A developer .env now enables the Tavily leg and holds a real key; pin both
+# so no test makes a web-search request. Pin the answering mode to the code
+# default so prompt assertions do not depend on the local .env either.
+os.environ.setdefault("RAG_WEB_SEARCH_ENABLED", "false")
+os.environ.setdefault("TAVILY_API_KEY", "")
+os.environ.setdefault("RAG_GENERAL_KNOWLEDGE_FALLBACK", "true")
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402

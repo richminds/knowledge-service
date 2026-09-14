@@ -32,7 +32,7 @@ from .config import settings
 from .embeddings import get_embeddings
 from .evaluation import EvaluationMetrics, evaluate_answer
 from .graph_store import GraphStore
-from .llm import build_augmented_prompt, generate_answer
+from .llm import build_generation_prompt, generate_answer
 from .rerank import rerank, select_by_knee_point
 from .security import afilter_prompt_injection_chunks
 from .vector_store import ScoredDocument, VectorStore, expand_parent_context, hybrid_fusion
@@ -222,8 +222,9 @@ async def _safety_filter(state: QueryState) -> QueryState:
 
 
 async def _augment(state: QueryState) -> QueryState:
-    """Build the evidence-grounded prompt with citation numbers."""
-    augmented_prompt = build_augmented_prompt(
+    """Record the prompt that generation will send — grounded with citation
+    numbers, or the bare question when nothing was selected (see rag/llm.py)."""
+    augmented_prompt = build_generation_prompt(
         state["question"],
         state.get("selected_chunks", []),
     )

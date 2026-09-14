@@ -53,7 +53,15 @@ class RAGSettings(BaseSettings):
     # — ingestion job status is currently in-process, matching the source implementation).
     ingestion_jobs_collection: str = "ingestion_jobs"
     mongo_max_pool_size: int = 50
-    mongo_min_pool_size: int = 2
+    # 0 (pymongo's own default), not 2. A minPoolSize > 0 makes pymongo's
+    # background maintenance thread open sockets on its own to keep the pool
+    # topped up; on a serverless runtime (this service runs on Vercel) the
+    # process is frozen between invocations, and on thaw those TLS handshakes
+    # to Atlas time out — logged as "MongoClient background task encountered
+    # an error: SSL handshake failed" on every wake-up while the request
+    # itself succeeds. With 0 the pool grows only on the request path. Same
+    # fix as the llm-gateway.
+    mongo_min_pool_size: int = 0
     mongo_connect_timeout_ms: int = 5_000
     mongo_server_selection_timeout_ms: int = 5_000
     mongo_socket_timeout_ms: int = 30_000
@@ -90,6 +98,15 @@ class RAGSettings(BaseSettings):
     # ──────────────────────────────────────────────────────────── Generation
     rag_temperature: float = 0.0
     rag_max_tokens: int = 2048
+    # When the knowledge base has nothing on the question, answer it anyway
+    # from the model's general knowledge — labelled as such, with no
+    # citations — instead of "the context does not contain this". Two
+    # mechanisms, both in rag/llm.py: no chunks selected → the bare question
+    # is sent, so the gateway classifies and routes it like any other prompt;
+    # chunks selected but off-topic (knee-point always returns ≥ min_k of
+    # them) → the grounded prompt permits a labelled general-knowledge
+    # answer. False = strict grounding: off-topic questions are refused.
+    general_knowledge_fallback: bool = True
 
     # ─────────────────────────────────────────────────────── Document loading
     enable_pdf_layout_extraction: bool = True
@@ -125,12 +142,17 @@ class RAGSettings(BaseSettings):
 
     # ──────────────────────────────────── Free web search (hybrid RAG, 4th leg)
     # Adds a web-search retrieval leg (Tavily free tier) alongside vector +
-    # keyword + graph search. Disabled by default. The provider credential
-    # (TAVILY_API_KEY) is read directly via os.getenv, not RAG_-prefixed — see
-    # rag/web_search.py. Absent key or a failed request means no results for
-    # that leg (fails open — never fabricates search hits).
+    # keyword + graph search. Disabled by default. Absent key or a failed
+    # request means no results for that leg (fails open — never fabricates
+    # search hits).
     web_search_enabled: bool = False
     web_search_top_k: int = 3
+    # The provider credential keeps Tavily's own un-prefixed name, but is read
+    # through settings rather than os.getenv(): pydantic-settings never
+    # exports .env values into os.environ, so an os.getenv() saw the key on a
+    # deploy (real env var) and nothing on a developer machine (.env only) —
+    # the leg silently skipped locally with "TAVILY_API_KEY not set".
+    tavily_api_key: str = Field(default="", validation_alias=AliasChoices("TAVILY_API_KEY"))
 
     # ──────────────────────────────────────────────────────── LLM Gateway
     # This service holds no provider credential and imports no provider SDK —

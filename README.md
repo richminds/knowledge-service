@@ -225,7 +225,8 @@ Prometheus/Sentry, just:
 | Web search (4th leg) | off | `RAG_WEB_SEARCH_ENABLED=true` + `TAVILY_API_KEY`, fails open to no results |
 | Cross-encoder reranking | off | `RAG_USE_CROSS_ENCODER_RERANKER=true`, else lexical local rerank |
 | Prompt-injection screening | heuristic always on | LLM classifier opt-in via `RAG_USE_LLM_PROMPT_INJECTION_CLASSIFIER=true` |
-| Citation validation | always on | flags missing/invalid `[n]` markers in the generated answer |
+| General-knowledge fallback | on | `RAG_GENERAL_KNOWLEDGE_FALLBACK`. A question the knowledge base has nothing on is still answered — from the model's own knowledge, first line `(Not from the knowledge base.)`, no citations — instead of "the context does not contain this". With nothing retrieved the bare question is sent so the gateway routes it by category; with off-topic chunks the grounded prompt permits the labelled answer. `false` = strict grounding (refuse) |
+| Citation validation | always on | flags missing/invalid `[n]` markers in the generated answer — a labelled general-knowledge answer reports `missing_citations: true` by design |
 | Answer evaluation | local metrics always on | faithfulness, precision, recall, answer relevance, blended into `confidence_score` (0-1) + `confidence_level` (high/medium/low) on every query response; `RAG_ADVANCED_EVAL_PROVIDER=ragas\|deepeval\|llm` for deeper scoring |
 | PDF layout extraction (tables/figures) | on | `pdfplumber`, falls back to `pypdf` |
 | PDF OCR | off | `RAG_ENABLE_PDF_OCR=true`, needs system `poppler` + `tesseract` (not in the base image) |

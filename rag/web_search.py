@@ -11,6 +11,10 @@ the only safe degradation for a retrieval source. Real HTTP failures are
 caught for the same reason and also degrade to an empty list rather than
 raising, so a flaky web search never fails the whole query.
 
+The key comes from ``settings.tavily_api_key`` (rag/config.py), which reads
+the real environment first and ``.env`` second — not ``os.getenv()``, which
+never sees ``.env`` and made this leg silently skip on developer machines.
+
 Web results are fetched fresh per query (never persisted to the vector
 store) and flow through the same fusion -> parent-expand -> rerank ->
 knee-point -> prompt-injection safety filter pipeline as internal chunks
@@ -20,12 +24,12 @@ runs on the full merged ``selected_chunks`` list regardless of source.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 import httpx
 from langchain_core.documents import Document
 
+from .config import settings
 from .vector_store import ScoredDocument
 
 logger = logging.getLogger(__name__)
@@ -39,8 +43,8 @@ class WebSearchStore:
 
     name = "tavily"
 
-    def __init__(self) -> None:
-        self._api_key = os.getenv("TAVILY_API_KEY", "")
+    def __init__(self, api_key: str | None = None) -> None:
+        self._api_key = api_key if api_key is not None else settings.tavily_api_key
 
     async def retrieve(self, query: str, top_k: int = 3) -> list[ScoredDocument]:
         """Return up to ``top_k`` web results for ``query``, or [] if unavailable."""
