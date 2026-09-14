@@ -17,6 +17,9 @@
 		},
 		{
 			"path": "../api-gateway"
+		},
+		{
+			"path": "../makemerich-backend"
 		}
 	],
 	"settings": {}
