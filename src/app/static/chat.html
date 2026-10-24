@@ -1,0 +1,301 @@
+<!doctype html>
+<!--
+  Minimal chat UI (C-230, C-231, D5) served at /ui. Talks to the same API as any client:
+  POST /api/v1/chat/stream (SSE), POST /api/v1/feedback, GET /api/v1/rag/modes (modes and the
+  selectable vector stores).
+  All server text is rendered with textContent, never parsed as HTML, so answers and source
+  snippets cannot inject markup. Replace with the organisation's front end when ready.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knowledge Assistant</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5d6677; --line: #dde1e8;
+    --accent: #0b5cad; --user: #e8f1fb; --high: #1e7a3c; --medium: #9a6700; --low: #b42318;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1b2029; --text: #e6e9ef; --muted: #9aa3b2; --line: #2c3340;
+      --accent: #6aa9ec; --user: #1f2b3b; --high: #5cc27f; --medium: #e0b049; --low: #f07a6e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center;
+           padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 17px; margin: 0 auto 0 0; }
+  header label { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  input, select, textarea, button { font: inherit; color: inherit; }
+  input, select, textarea { background: var(--bg); border: 1px solid var(--line);
+                            border-radius: 6px; padding: 6px 8px; }
+  button { cursor: pointer; border: 1px solid var(--line); background: var(--panel);
+           border-radius: 6px; padding: 6px 12px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px 16px 140px; }
+  .msg { margin: 0 0 16px; padding: 12px 14px; border-radius: 10px; background: var(--panel);
+         border: 1px solid var(--line); }
+  .msg.user { background: var(--user); }
+  .answer { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .steps { font-size: 13px; color: var(--muted); margin: 0 0 8px; padding-left: 18px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px;
+          font-size: 13px; color: var(--muted); }
+  .badge { border-radius: 999px; padding: 1px 9px; border: 1px solid currentColor; font-weight: 600; }
+  .badge.high { color: var(--high); } .badge.medium { color: var(--medium); }
+  .badge.low { color: var(--low); } .badge.review { color: var(--low); }
+  details { margin-top: 8px; font-size: 13px; }
+  details ol { padding-left: 20px; margin: 6px 0; }
+  details li { margin-bottom: 6px; }
+  .snippet { color: var(--muted); display: block; }
+  .uncited { opacity: .6; }
+  .error { color: var(--low); }
+  form.ask { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel);
+             border-top: 1px solid var(--line); padding: 12px 16px; }
+  form.ask div { max-width: 860px; margin: 0 auto; display: flex; gap: 8px; }
+  form.ask textarea { flex: 1; resize: vertical; min-height: 44px; max-height: 200px; }
+  @media (max-width: 600px) { header label.optional { display: none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Knowledge Assistant</h1>
+  <label>Mode <select id="mode"><option value="">default</option></select></label>
+  <label id="vectorStoreLabel" hidden>Vector DB <select id="vectorStore"></select></label>
+  <label class="optional"><input type="checkbox" id="evaluate"> Judge answers</label>
+  <label class="optional">Credential
+    <input id="credential" type="password" placeholder="API key or bearer token" autocomplete="off">
+  </label>
+  <button type="button" id="newChat">New chat</button>
+</header>
+
+<main id="log" aria-live="polite"></main>
+
+<form class="ask" id="ask">
+  <div>
+    <textarea id="query" placeholder="Ask a question…" maxlength="4000" required></textarea>
+    <button class="primary" id="send" type="submit">Ask</button>
+  </div>
+</form>
+
+<script>
+"use strict";
+const API = "/api/v1";
+const $ = (id) => document.getElementById(id);
+let conversationId = null;
+const VECTOR_STORE_LABELS = { mongo: "MongoDB Atlas" };
+const storeLabel = (name) => VECTOR_STORE_LABELS[name] || name;
+
+// Per-tab convenience only; never required.
+const store = {
+  get(k) { try { return sessionStorage.getItem(k) || ""; } catch { return ""; } },
+  set(k, v) { try { sessionStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+};
+$("credential").value = store.get("credential");
+$("credential").addEventListener("change", (e) => store.set("credential", e.target.value.trim()));
+
+function headers() {
+  const h = { "Content-Type": "application/json" };
+  const cred = $("credential").value.trim();
+  // A JWT has three dot-separated parts; anything else is treated as an API key.
+  if (cred.split(".").length === 3) h["Authorization"] = "Bearer " + cred;
+  else if (cred) h["X-API-Key"] = cred;
+  return h;
+}
+
+function el(tag, attrs = {}, text) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+const MODE_LABELS = {
+  semantic: "Semantic (vector)",
+  hybrid: "Hybrid (vector + keyword)",
+  hybrid_graph: "Hybrid + knowledge graph",
+  graph: "Graph",
+  agentic: "Agentic",
+  auto: "Auto (router)",
+};
+const modeLabel = (m) => MODE_LABELS[m] || m;
+
+async function loadModes() {
+  try {
+    const res = await fetch(API + "/rag/modes", { headers: headers() });
+    if (!res.ok) return;
+    const modes = await res.json();
+    const select = $("mode");
+    select.replaceChildren(el("option", { value: "" }, "default (" + modeLabel(modes.default) + ")"));
+    const stores = modes.vector_stores || [];
+    // Several stores are kept in sync (VECTOR_STORE_PROVIDERS): pick the one that answers.
+    if (stores.length > 1) {
+      const storeSelect = $("vectorStore");
+      storeSelect.replaceChildren(el("option", { value: "" },
+        "default (" + storeLabel(modes.default_vector_store) + ")"));
+      for (const s of stores) storeSelect.append(el("option", { value: s }, storeLabel(s)));
+      storeSelect.disabled = !modes.allow_override;
+      $("vectorStoreLabel").hidden = false;
+    }
+    if (!modes.allow_override) { select.disabled = true; return; }
+    for (const m of [...modes.enabled, "auto"]) select.append(el("option", { value: m }, modeLabel(m)));
+  } catch { /* offline or unauthorised: keep the default */ }
+}
+
+// Parses an SSE byte stream into {event, data} objects.
+async function* sse(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const block = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      let event = "message", data = "";
+      for (const line of block.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7);
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      try { yield { event, data: JSON.parse(data) }; } catch { /* ignore malformed */ }
+    }
+  }
+}
+
+function safeUrl(url) {
+  try {
+    const u = new URL(url, location.href);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+  } catch { return null; }
+}
+
+function renderSources(container, citations) {
+  container.replaceChildren();
+  if (!citations || !citations.length) return;
+  const details = el("details");
+  details.append(el("summary", {}, "Sources (" + citations.length + ")"));
+  const list = el("ol");
+  for (const c of citations) {
+    const item = el("li", { value: String(c.index), class: c.cited ? "" : "uncited" });
+    const label = c.title || c.source;
+    const href = c.url && safeUrl(c.url);
+    const title = href ? el("a", { href, target: "_blank", rel: "noopener noreferrer" }, label)
+                       : el("strong", {}, label);
+    item.append(title);
+    const where = [c.section_path, c.page ? "p. " + c.page : "", c.effective_date].filter(Boolean);
+    if (where.length) item.append(document.createTextNode(" · " + where.join(" · ")));
+    if (!c.cited) item.append(document.createTextNode(" (not cited)"));
+    if (c.snippet) item.append(el("span", { class: "snippet" }, c.snippet));
+    list.append(item);
+  }
+  details.append(list);
+  container.append(details);
+}
+
+function feedbackButtons(meta, responseId, ragMode) {
+  const send = async (rating, button) => {
+    let comment = null;
+    if (rating === "down") comment = prompt("What was wrong? (optional)") || null;
+    try {
+      const res = await fetch(API + "/feedback", {
+        method: "POST", headers: headers(),
+        body: JSON.stringify({ response_id: responseId, rating, comment, rag_mode: ragMode }),
+      });
+      if (res.ok) { up.disabled = down.disabled = true; button.textContent += " ✓"; }
+    } catch { /* best effort */ }
+  };
+  const up = el("button", { type: "button", "aria-label": "Helpful" }, "👍");
+  const down = el("button", { type: "button", "aria-label": "Not helpful" }, "👎");
+  up.onclick = () => send("up", up);
+  down.onclick = () => send("down", down);
+  meta.append(up, down);
+}
+
+async function ask(query) {
+  const log = $("log");
+  log.append(el("div", { class: "msg user" }, query));
+  const bubble = el("div", { class: "msg" });
+  const steps = el("ul", { class: "steps" });
+  const answer = el("div", { class: "answer" });
+  const sources = el("div");
+  const meta = el("div", { class: "meta" });
+  bubble.append(steps, answer, sources, meta);
+  log.append(bubble);
+  bubble.scrollIntoView({ block: "end" });
+
+  const body = { query, conversation_id: conversationId, evaluate: $("evaluate").checked };
+  if ($("mode").value) body.rag_mode = $("mode").value;
+  if ($("vectorStore").value) body.vector_store = $("vectorStore").value;
+
+  let response;
+  try {
+    response = await fetch(API + "/chat/stream", {
+      method: "POST", headers: headers(), body: JSON.stringify(body),
+    });
+  } catch (err) {
+    answer.append(el("span", { class: "error" }, "Network error: " + err.message));
+    return;
+  }
+  if (!response.ok) {
+    let detail = response.statusText;
+    try { detail = (await response.json()).detail || detail; } catch { /* not JSON */ }
+    if (typeof detail !== "string") detail = JSON.stringify(detail);
+    answer.append(el("span", { class: "error" }, response.status + ": " + detail));
+    return;
+  }
+
+  let quality = null;
+  for await (const { event, data } of sse(response)) {
+    if (event === "step") {
+      steps.append(el("li", {}, data.label + (data.duration_ms ? " (" + Math.round(data.duration_ms) + " ms)" : "")));
+    } else if (event === "citations") {
+      renderSources(sources, data);
+    } else if (event === "token") {
+      answer.textContent += data;
+      bubble.scrollIntoView({ block: "end" });
+    } else if (event === "error") {
+      answer.append(el("span", { class: "error" }, data.detail));
+    } else if (event === "quality") {
+      quality = data;
+      if (data.withheld) answer.textContent = data.replacement || "";
+      renderSources(sources, data.citations);
+    } else if (event === "done") {
+      conversationId = data.conversation_id || conversationId;
+      steps.hidden = true;
+      const report = quality && quality.quality;
+      if (report) {
+        const badge = el("span", { class: "badge " + report.confidence, title: report.explanation },
+                         report.confidence + " confidence");
+        meta.append(badge, el("span", {}, report.explanation));
+      }
+      meta.append(el("span", {}, "mode: " + data.rag_mode
+        + (data.vector_store ? " · " + storeLabel(data.vector_store) : "")
+        + (data.cached ? " · cached" : "")));
+      if (quality && quality.latency_ms) meta.append(el("span", {}, (quality.latency_ms / 1000).toFixed(1) + " s"));
+      feedbackButtons(meta, data.response_id, data.rag_mode);
+    }
+  }
+}
+
+$("ask").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const query = $("query").value.trim();
+  if (!query) return;
+  $("query").value = "";
+  $("send").disabled = true;
+  try { await ask(query); } finally { $("send").disabled = false; $("query").focus(); }
+});
+$("query").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("ask").requestSubmit(); }
+});
+$("newChat").addEventListener("click", () => { conversationId = null; $("log").replaceChildren(); });
+loadModes();
+</script>
+</body>
+</html>

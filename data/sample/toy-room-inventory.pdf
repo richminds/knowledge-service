@@ -1,0 +1,164 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 857 >>
+stream
+BT
+/F2 18 Tf 1 0 0 1 60 790 Tm (Toy Room Inventory - Test Document) Tj
+/F2 13 Tf 1 0 0 1 60 743 Tm (1. Bag A) Tj
+/F1 11 Tf 1 0 0 1 60 721 Tm (Bag A contains 8 blue balls and 10 red balls.) Tj
+/F1 11 Tf 1 0 0 1 60 701 Tm (Bag A is made of green canvas and is kept on the top shelf.) Tj
+/F1 11 Tf 1 0 0 1 60 681 Tm (Each blue ball in Bag A weighs 50 grams. Each red ball weighs 40 grams.) Tj
+/F2 13 Tf 1 0 0 1 60 641 Tm (2. Bag B) Tj
+/F1 11 Tf 1 0 0 1 60 619 Tm (Bag B contains 5 green balls, 3 blue balls and 2 yellow balls.) Tj
+/F1 11 Tf 1 0 0 1 60 599 Tm (Bag B is a small leather bag kept under the desk.) Tj
+/F2 13 Tf 1 0 0 1 60 559 Tm (3. Box C) Tj
+/F1 11 Tf 1 0 0 1 60 537 Tm (Box C holds 12 wooden cubes and 4 toy cars. It does not contain any balls.) Tj
+/F1 11 Tf 1 0 0 1 60 517 Tm (Box C is owned by Priya. Bag A and Bag B are owned by Arjun.) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 742 >>
+stream
+BT
+/F2 13 Tf 1 0 0 1 60 790 Tm (4. Room Rules) Tj
+/F1 11 Tf 1 0 0 1 60 768 Tm (Rule 1: Red balls may only be used outdoors.) Tj
+/F1 11 Tf 1 0 0 1 60 748 Tm (Rule 2: Yellow balls are reserved for children under 5 years old.) Tj
+/F1 11 Tf 1 0 0 1 60 728 Tm (Rule 3: The toy room is open from 9:00 AM to 5:00 PM, Monday to Friday.) Tj
+/F2 13 Tf 1 0 0 1 60 688 Tm (5. Change Log) Tj
+/F1 11 Tf 1 0 0 1 60 666 Tm (On 3 March 2026, 2 red balls were removed from Bag A because they were damaged.) Tj
+/F1 11 Tf 1 0 0 1 60 646 Tm (The counts in Section 1 were recorded before this removal.) Tj
+/F2 13 Tf 1 0 0 1 60 606 Tm (6. Contact) Tj
+/F1 11 Tf 1 0 0 1 60 584 Tm (Questions about the toy room should be sent to the room supervisor, Meena Rao.) Tj
+ET
+endstream
+endobj
+99 0 obj
+<< /Title (Toy Room Inventory - RAG Test) /Author (RAG test fixture) >>
+endobj
+xref
+0 100
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000326 00000 n 
+0000000462 00000 n 
+0000001370 00000 n 
+0000001506 00000 n 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000000000 65535 f 
+0000002299 00000 n 
+trailer
+<< /Size 100 /Root 1 0 R /Info 99 0 R >>
+startxref
+2387
+%%EOF

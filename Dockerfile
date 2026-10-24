@@ -1,34 +1,51 @@
-# Knowledge Service — production image.
-FROM python:3.11-slim AS base
+# syntax=docker/dockerfile:1
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+# ---- Build stage: compile wheels into a virtualenv (build tools stay out of the runtime) ----
+FROM python:3.12-slim AS builder
 
+ENV PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
+
+# ---- Runtime stage ----
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH" \
+    PORT=8000 \
+    # Keep 1 while ingestion job status lives in memory (see IngestionService); raise
+    # once jobs move to a shared store.
+    WEB_CONCURRENCY=1
+
+# curl: container HEALTHCHECK (file types are detected from content in Python).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --uid 1000 appuser
 WORKDIR /app
 
-# Dependencies first so the layer caches across code changes.
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=builder /opt/venv /opt/venv
+COPY --chown=appuser:appuser src ./src
+COPY --chown=appuser:appuser config ./config
+# Worker / scheduled jobs (ingestion_worker.py, reconcile.py) run from the same image.
+COPY --chown=appuser:appuser scripts ./scripts
 
-COPY rag ./rag
-COPY app ./app
-COPY sdk ./sdk
-COPY run.py ./
+USER appuser
+EXPOSE 8000
 
-RUN useradd --create-home --uid 10001 knowledge && chown -R knowledge:knowledge /app
-USER knowledge
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/api/v1/health || exit 1
 
-ENV KNOWLEDGE_PORT=8090
-EXPOSE 8090
-
-# Readiness (not liveness): the orchestrator should also probe /health/live.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import os,urllib.request,sys; \
-url=f\"http://127.0.0.1:{os.getenv('KNOWLEDGE_PORT','8090')}/health/live\"; \
-sys.exit(0 if urllib.request.urlopen(url, timeout=4).status == 200 else 1)"
-
-# Single worker by default: the in-memory ingestion job registry is
-# per-process (see app/services/ingest_service.py) — scale via replicas, not
-# workers, until that becomes a MongoDB-backed registry.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${KNOWLEDGE_PORT:-8090} --workers ${KNOWLEDGE_WORKERS:-1}"]
+# --proxy-headers: App Service terminates TLS in front of the container.
+CMD ["sh", "-c", "exec uvicorn app.main:app --app-dir src --host 0.0.0.0 --port ${PORT} --workers ${WEB_CONCURRENCY} --proxy-headers --forwarded-allow-ips='*'"]

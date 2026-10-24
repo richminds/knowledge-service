@@ -1,0 +1,61 @@
+# Quality gate (C-213): run the golden set against the freshly deployed QA services and fail
+# the run on threshold violations or regressions against evals/results/baseline.json.
+#
+# The eval runs in-process with the QA web app's settings and the pipeline's identity
+# (AzureCliCredential). One-time setup: grant the QA service connection's principal
+#   - Cognitive Services OpenAI User on the Azure OpenAI account
+#   - Key Vault Secrets User on the QA vault (MONGODB_URL comes from the mongodb-url secret)
+# and allow the build agents' outbound IPs in the Atlas project's network access list.
+parameters:
+  - name: azureSubscription
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: pythonVersion
+    type: string
+  - name: ragModes
+    type: string
+    default: "all"
+  - name: judge
+    type: boolean
+    default: true
+
+steps:
+  - checkout: self
+
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: "${{ parameters.pythonVersion }}"
+
+  - script: python -m pip install --upgrade pip && pip install -r requirements.txt
+    displayName: "Install dependencies"
+
+  - task: AzureCLI@2
+    displayName: "Run golden-set evaluation (gate)"
+    inputs:
+      azureSubscription: "${{ parameters.azureSubscription }}"
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        app=$(az webapp list --resource-group "${{ parameters.resourceGroup }}" \
+          --query "[?starts_with(name, 'app-')].name | [0]" --output tsv)
+        # Reuse the deployed app's settings; drop the managed-identity id so the SDKs fall
+        # back to the pipeline's Azure CLI login.
+        az webapp config appsettings list --resource-group "${{ parameters.resourceGroup }}" \
+          --name "$app" --output json \
+          | jq -r '.[] | select(.name != "AZURE_CLIENT_ID" and .name != "WEBSITES_PORT")
+                       | "export \(.name)=\(.value | @sh)"' > "$(Agent.TempDirectory)/app.env"
+        source "$(Agent.TempDirectory)/app.env"
+        export ANSWER_CACHE_ENABLED=false RAG_ALLOW_MODE_OVERRIDE=true
+        mkdir -p evals/results
+        python scripts/run_eval.py --gate --rag-mode "${{ parameters.ragModes }}" \
+          ${{ iif(parameters.judge, '--judge', '') }} \
+          --output "evals/results/qa-$(Build.BuildId).json"
+
+  - task: PublishPipelineArtifact@1
+    displayName: "Publish evaluation results"
+    condition: always()
+    inputs:
+      targetPath: evals/results
+      artifact: "eval-results-$(System.JobAttempt)"

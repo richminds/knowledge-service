@@ -1,0 +1,9 @@
+# Maps source-system groups that have no Entra object id to Entra group ids (C-066).
+# Unmapped groups are dropped, so a document restricted only to unmapped groups is
+# visible to nobody (fail closed). Placeholders — replace with real group object ids.
+
+sharepoint_site_groups:
+  # "HR Members": 00000000-0000-0000-0000-000000000000
+
+confluence_groups:
+  # confluence-hr: 00000000-0000-0000-0000-000000000000

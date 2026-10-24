@@ -1,0 +1,43 @@
+# Named data sources for the db:// and api:// connectors (C-061, C-062) — placeholders.
+# Secrets: ${ENV_VAR} (App Service setting) or ${kv:secret-name} (Azure Key Vault).
+# Ingest with: POST /api/v1/ingestion {"source_uri": "db://hr_faq"} or "api://servicenow_kb".
+
+databases:
+  hr_faq:
+    dsn: ${HR_FAQ_DB_DSN}                 # TODO: postgresql://user@host:5432/db?sslmode=require
+    query: SELECT id, question, answer, updated_at FROM faq WHERE active
+    id_column: id
+    title_column: question
+    text_template: "Q: {question}\nA: {answer}"
+    updated_column: updated_at
+    acl: ["*"]
+
+apis:
+  servicenow_kb:
+    url: https://TODO-instance.service-now.com/api/now/table/kb_knowledge
+    headers:
+      Authorization: Bearer ${kv:servicenow-api-token}
+    params:
+      sysparm_query: workflow_state=published
+      sysparm_fields: sys_id,short_description,text,sys_updated_on
+    items_path: result
+    pagination: {type: offset, param: sysparm_offset, size_param: sysparm_limit, page_size: 100}
+    id_field: sys_id
+    title_field: short_description
+    text_fields: [text]
+    url_template: https://TODO-instance.service-now.com/kb_view.do?sys_kb_id={sys_id}
+    updated_field: sys_updated_on
+    acl: ["*"]
+
+  jira_issues:
+    url: https://TODO-org.atlassian.net/rest/api/3/search
+    headers:
+      Authorization: Basic ${kv:jira-basic-auth}
+    params: {jql: "project = TODO AND statusCategory = Done", fields: "summary,description,updated"}
+    items_path: issues
+    pagination: {type: offset, param: startAt, size_param: maxResults, page_size: 50}
+    id_field: key
+    title_field: key
+    text_fields: [key]
+    url_template: https://TODO-org.atlassian.net/browse/{key}
+    acl: ["*"]

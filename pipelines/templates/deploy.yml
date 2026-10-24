@@ -1,0 +1,98 @@
+parameters:
+  - name: environmentName
+    type: string
+    values: [qa, prod]
+  - name: azureSubscription
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: location
+    type: string
+  - name: bicepParamFile
+    type: string
+  - name: containerImage
+    type: string
+  # Blue-green (C-234): deploy to this slot, smoke-test it, then swap into production.
+  # Blank = deploy straight to the production slot (QA).
+  - name: slot
+    type: string
+    default: ""
+
+steps:
+  # Deployment jobs don't check out the repo by default; Bicep files are needed.
+  - checkout: self
+
+  - task: AzureCLI@2
+    displayName: "Provision infrastructure (Bicep) - ${{ parameters.environmentName }}"
+    name: infra
+    inputs:
+      azureSubscription: "${{ parameters.azureSubscription }}"
+      scriptType: bash
+      scriptLocation: inlineScript
+      inlineScript: |
+        set -euo pipefail
+        az group create --name "${{ parameters.resourceGroup }}" --location "${{ parameters.location }}" --output none
+        outputs=$(az deployment group create \
+          --name "rag-${{ parameters.environmentName }}-$(Build.BuildId)" \
+          --resource-group "${{ parameters.resourceGroup }}" \
+          --parameters "${{ parameters.bicepParamFile }}" \
+          --parameters containerImage="${{ parameters.containerImage }}" \
+          --query properties.outputs --output json)
+        echo "##vso[task.setvariable variable=webAppName]$(echo "$outputs" | jq -r .webAppName.value)"
+        echo "##vso[task.setvariable variable=webAppHost]$(echo "$outputs" | jq -r .webAppDefaultHostName.value)"
+        echo "##vso[task.setvariable variable=stagingHost]$(echo "$outputs" | jq -r '.stagingHostName.value // ""')"
+
+  - ${{ if eq(parameters.slot, '') }}:
+      - task: AzureWebAppContainer@1
+        displayName: "Deploy ${{ parameters.containerImage }} to $(webAppName)"
+        inputs:
+          azureSubscription: "${{ parameters.azureSubscription }}"
+          appName: "$(webAppName)"
+          containers: "${{ parameters.containerImage }}"
+
+  - ${{ if ne(parameters.slot, '') }}:
+      - task: AzureWebAppContainer@1
+        displayName: "Deploy ${{ parameters.containerImage }} to $(webAppName)/${{ parameters.slot }}"
+        inputs:
+          azureSubscription: "${{ parameters.azureSubscription }}"
+          appName: "$(webAppName)"
+          deployToSlotOrASE: true
+          resourceGroupName: "${{ parameters.resourceGroup }}"
+          slotName: "${{ parameters.slot }}"
+          containers: "${{ parameters.containerImage }}"
+
+      - script: |
+          set -u
+          url="https://$(stagingHost)/api/v1/health/ready"
+          for attempt in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || true)
+            echo "Attempt $attempt: $url -> $code"
+            if [ "$code" = "200" ]; then exit 0; fi
+            sleep 20
+          done
+          echo "##vso[task.logissue type=error]Smoke test failed on slot: $url never became ready"
+          exit 1
+        displayName: "Smoke test ${{ parameters.slot }} slot"
+
+      # Rollback (C-235): swap again; the previous release is now in the staging slot.
+      - task: AzureAppServiceManage@0
+        displayName: "Swap ${{ parameters.slot }} into production"
+        inputs:
+          azureSubscription: "${{ parameters.azureSubscription }}"
+          Action: "Swap Slots"
+          WebAppName: "$(webAppName)"
+          ResourceGroupName: "${{ parameters.resourceGroup }}"
+          SourceSlot: "${{ parameters.slot }}"
+
+  - script: |
+      set -u
+      url="https://$(webAppHost)/api/v1/health/ready"
+      for attempt in $(seq 1 30); do
+        code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || true)
+        echo "Attempt $attempt: $url -> $code"
+        if [ "$code" = "200" ]; then exit 0; fi
+        sleep 20
+      done
+      echo "##vso[task.logissue type=error]Smoke test failed: $url never became ready"
+      exit 1
+    displayName: "Smoke test (readiness probe)"

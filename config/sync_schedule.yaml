@@ -1,0 +1,14 @@
+# Sources fully re-synchronised by scripts/reconcile.py (nightly, C-146) — placeholders.
+# Each run ingests new/changed documents, applies ACL changes and deletes documents that
+# no longer exist at the source.
+
+sources:
+  - uri: blob://documents/
+    collection: default
+  # - uri: sharepoint://TODO.sharepoint.com/sites/HR/Shared Documents/Policies
+  #   collection: hr
+  #   targets: [vector, graph]
+  # - uri: confluence://TODO-SPACE
+  #   collection: wiki
+  # - uri: db://hr_faq
+  #   collection: hr

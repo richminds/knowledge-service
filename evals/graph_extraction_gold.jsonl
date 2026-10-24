@@ -1,0 +1,1 @@
+{"text": "The Human Resources Department manages the Annual Leave Policy, which applies to all staff.", "entities": ["Human Resources Department", "Annual Leave Policy"], "relations": [["Human Resources Department", "MANAGES", "Annual Leave Policy"]]}

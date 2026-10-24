@@ -1,48 +1,21 @@
-from langchain_core.documents import Document
-
-from rag.chunking import chunk_documents, recursive_chunk_documents
+from app.rag.ingestion.chunking import chunk_text
 
 
-class FakeEmbeddingsClient:
-    """Stand-in for GatewayEmbeddingsClient — deterministic, no HTTP."""
+def test_chunk_text_splits_on_token_boundaries():
+    text = "word " * 2000
+    chunks = chunk_text(text, chunk_size=100, chunk_overlap=20)
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [[float(len(t) % 7), 0.1, 0.2] for t in texts]
-
-    def embed_query(self, text: str) -> list[float]:
-        return [float(len(text) % 7), 0.9, 0.8]
+    assert len(chunks) > 1
+    assert all(c.token_count <= 100 for c in chunks)
 
 
-def test_recursive_chunking_assigns_stable_chunk_ids():
-    doc = Document(
-        page_content="word " * 500,
-        metadata={"source": "f.txt", "section": "intro"},
-    )
-    chunks, parents = recursive_chunk_documents([doc])
-
-    assert chunks
-    assert all(c.metadata.get("chunk_id") for c in chunks)
-    assert all(c.metadata.get("parent_id") for c in chunks)
-    assert parents
-    # every chunk's parent_id must resolve to a produced parent document
-    assert all(c.metadata["parent_id"] in parents for c in chunks)
+def test_chunk_text_empty_input_returns_no_chunks():
+    assert chunk_text("", chunk_size=100, chunk_overlap=20) == []
 
 
-def test_chunk_documents_dispatches_to_recursive_by_default():
-    doc = Document(page_content="hello world", metadata={"source": "f.txt", "section": "s"})
-    chunks, _parents = chunk_documents([doc], FakeEmbeddingsClient(), "recursive")
-    assert len(chunks) == 1
-    assert chunks[0].metadata["chunk_strategy"] == "recursive"
-
-
-def test_semantic_chunking_produces_chunks_and_calls_embeddings():
-    text = (
-        "First paragraph discusses apples in detail with several sentences of content.\n\n"
-        "Second paragraph is about an unrelated topic like spacecraft engines and thrust.\n\n"
-        "Third paragraph returns to apples and fruit again for good measure."
-    )
-    doc = Document(page_content=text, metadata={"source": "f.md", "section": "s"})
-    chunks, parents = chunk_documents([doc], FakeEmbeddingsClient(), "semantic")
-    assert chunks
-    assert all(c.metadata["chunk_strategy"] == "semantic" for c in chunks)
-    assert parents
+def test_chunk_text_rejects_overlap_not_smaller_than_size():
+    try:
+        chunk_text("hello world", chunk_size=50, chunk_overlap=50)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

@@ -1,0 +1,82 @@
+parameters:
+  - name: pythonVersion
+    type: string
+    default: "3.12"
+  - name: pushImage
+    type: boolean
+    default: false
+  - name: imageRepository
+    type: string
+  - name: imageTag
+    type: string
+  - name: containerRegistryServiceConnection
+    type: string
+
+steps:
+  - task: UsePythonVersion@0
+    inputs:
+      versionSpec: "${{ parameters.pythonVersion }}"
+    displayName: "Use Python ${{ parameters.pythonVersion }}"
+
+  - task: Cache@2
+    displayName: "Cache pip downloads"
+    inputs:
+      key: 'pip | "$(Agent.OS)" | requirements.txt | requirements-dev.txt'
+      restoreKeys: |
+        pip | "$(Agent.OS)"
+      path: $(Pipeline.Workspace)/.pip
+
+  - script: |
+      python -m pip install --upgrade pip
+      pip install --cache-dir $(Pipeline.Workspace)/.pip -r requirements-dev.txt
+    displayName: "Install dependencies"
+
+  - script: |
+      ruff check src tests scripts
+      ruff format --check src tests scripts
+    displayName: "Lint & format check (ruff)"
+
+  - script: |
+      pytest --cov=src --cov-report=xml --junitxml=test-results.xml
+    displayName: "Run unit & integration tests"
+
+  - task: PublishTestResults@2
+    condition: succeededOrFailed()
+    inputs:
+      testResultsFormat: "JUnit"
+      testResultsFiles: "test-results.xml"
+    displayName: "Publish test results"
+
+  - task: PublishCodeCoverageResults@2
+    condition: succeededOrFailed()
+    inputs:
+      summaryFileLocation: "coverage.xml"
+    displayName: "Publish coverage"
+
+  - script: |
+      az bicep install
+      az bicep build --file infra/main.bicep --stdout > /dev/null
+      az bicep build-params --file infra/qa.bicepparam --stdout > /dev/null
+      az bicep build-params --file infra/prod.bicepparam --stdout > /dev/null
+    displayName: "Validate Bicep (lint + compile)"
+
+  - ${{ if eq(parameters.pushImage, false) }}:
+      - task: Docker@2
+        displayName: "Build container image (PR validation, not pushed)"
+        inputs:
+          repository: "${{ parameters.imageRepository }}"
+          command: build
+          Dockerfile: "$(Build.SourcesDirectory)/Dockerfile"
+          tags: |
+            ${{ parameters.imageTag }}
+
+  - ${{ if eq(parameters.pushImage, true) }}:
+      - task: Docker@2
+        displayName: "Build and push container image"
+        inputs:
+          containerRegistry: "${{ parameters.containerRegistryServiceConnection }}"
+          repository: "${{ parameters.imageRepository }}"
+          command: buildAndPush
+          Dockerfile: "$(Build.SourcesDirectory)/Dockerfile"
+          tags: |
+            ${{ parameters.imageTag }}

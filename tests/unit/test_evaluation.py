@@ -1,126 +1,92 @@
-from langchain_core.documents import Document
+"""Phase 6: evaluation harness metrics, gate, baseline and an end-to-end run."""
 
-from rag.evaluation import evaluate_answer
+import json
+import sys
+from pathlib import Path
 
+import pytest
 
-def _citation(valid: bool, cited=(1,), available=(1,)) -> dict:
-    return {
-        "valid": valid,
-        "cited_numbers": list(cited),
-        "missing_citations": not cited,
-        "invalid_citations": [],
-        "available_citations": list(available),
-    }
+from app.core.config import RagMode
+from app.rag.evaluation.harness import (
+    EvalRunner,
+    GoldenCase,
+    append_history,
+    check_thresholds,
+    compare_baseline,
+    load_golden,
+    retrieval_metrics,
+)
 
-
-def test_evaluate_answer_returns_all_expected_fields():
-    chunks = [Document(page_content="Refunds are issued within five business days.")]
-    metrics = evaluate_answer(
-        "How long do refunds take?",
-        "Refunds take five business days. [1]",
-        chunks,
-        _citation(valid=True),
-    )
-
-    for key in (
-        "faithfulness",
-        "precision",
-        "recall",
-        "answer_relevance",
-        "confidence_score",
-        "confidence_level",
-        "evaluator",
-        "advanced_notes",
-    ):
-        assert key in metrics
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 
-def test_precision_and_recall_are_high_for_relevant_context():
-    chunks = [
-        Document(page_content="Refunds are issued within five business days of a return."),
-        Document(page_content="Refund requests must be submitted through the support portal."),
+def test_retrieval_metrics():
+    metrics = retrieval_metrics([False, True, True], total_relevant=2, k=3)
+    assert metrics["recall"] == 1.0 and metrics["mrr"] == 0.5
+    assert metrics["precision"] == pytest.approx(2 / 3)
+    assert 0 < metrics["ndcg"] < 1
+    assert retrieval_metrics([False], 1, 3)["hit"] == 0.0
+
+
+def test_gate_and_baseline(tmp_path):
+    report = {"summary": {"semantic": {"hit": 0.6, "latency_ms": 2000.0, "cases": 3}}}
+    thresholds = tmp_path / "t.yaml"
+    thresholds.write_text("all: {hit: 0.7, latency_ms_max: 1000}\n")
+    assert check_thresholds(report, thresholds) == [
+        "semantic.hit=0.6 < 0.7",
+        "semantic.latency_ms=2000.0 > 1000",
     ]
-    metrics = evaluate_answer(
-        "How long do refunds take?",
-        "Refunds take five business days. [1]",
-        chunks,
-        _citation(valid=True),
+    baseline = tmp_path / "b.json"
+    baseline.write_text(json.dumps({"summary": {"semantic": {"hit": 0.8, "latency_ms": 1000.0}}}))
+    assert compare_baseline(report, baseline) == [
+        "semantic.hit: 0.8 -> 0.6",
+        "semantic.latency_ms: 1000.0 -> 2000.0",
+    ]
+    append_history(report, tmp_path / "h.jsonl", {"note": "x"})
+    assert json.loads((tmp_path / "h.jsonl").read_text())["summary"] == report["summary"]
+
+
+def test_store_runs_use_their_mode_thresholds(tmp_path):
+    report = {"summary": {"semantic@mongo": {"hit": 0.5, "cases": 1}}}
+    thresholds = tmp_path / "t.yaml"
+    thresholds.write_text("semantic: {hit: 0.7}\n")
+    assert check_thresholds(report, thresholds) == ["semantic@mongo.hit=0.5 < 0.7"]
+
+
+def test_load_golden_types(tmp_path):
+    path = tmp_path / "g.jsonl"
+    path.write_text('{"question": "Who runs X?", "question_type": "relationship", "extra": 1}\n')
+    case = load_golden(path)[0]
+    assert case.id == "case-1" and case.mode == "graph"
+
+
+async def test_eval_runner_end_to_end(ingestion_pipeline, retrieval_service, chat_client):
+    await ingestion_pipeline.run("docs", "default")
+    cases = [
+        GoldenCase(
+            "How many annual leave days?",
+            "a",
+            question_type="factoid",
+            expected_sources=["leave.md"],
+            expected_answer="25 days",
+        ),
+        GoldenCase("What is the cafeteria menu?", "b", question_type="unanswerable"),
+    ]
+    report = await EvalRunner(retrieval_service, llm=chat_client, top_k=3).run(
+        cases, [RagMode.SEMANTIC, RagMode.AUTO], judge=True
     )
-
-    assert metrics["precision"] > 0.0
-    assert metrics["recall"] > 0.0
-
-
-def test_precision_and_recall_are_zero_with_no_chunks():
-    metrics = evaluate_answer(
-        "How long do refunds take?",
-        "I do not have enough evidence to answer.",
-        [],
-        _citation(valid=False, cited=(), available=()),
+    semantic = report["summary"]["semantic"]
+    assert (
+        semantic["hit"] == 1.0
+        and semantic["correctness"] == 4.0
+        and semantic["faithfulness"] == 5.0
     )
-
-    assert metrics["precision"] == 0.0
-    assert metrics["recall"] == 0.0
-
-
-def test_recall_drops_when_context_is_off_topic():
-    on_topic = [Document(page_content="Refunds are issued within five business days.")]
-    off_topic = [Document(page_content="Our warehouse is located in Chicago.")]
-
-    on_topic_metrics = evaluate_answer(
-        "How long do refunds take?", "Five business days. [1]", on_topic, _citation(valid=True)
-    )
-    off_topic_metrics = evaluate_answer(
-        "How long do refunds take?", "Unclear. [1]", off_topic, _citation(valid=True)
-    )
-
-    assert off_topic_metrics["recall"] < on_topic_metrics["recall"]
+    assert "routing_accuracy" in report["summary"]["auto"]
+    assert set(report["by_type"]["semantic"]) == {"factoid", "unanswerable"}
 
 
-def test_confidence_score_is_penalized_by_invalid_citations():
-    chunks = [Document(page_content="Refunds are issued within five business days.")]
+def test_spearman():
+    from calibrate_judge import spearman
 
-    valid = evaluate_answer(
-        "How long do refunds take?", "Five business days. [1]", chunks, _citation(valid=True)
-    )
-    invalid = evaluate_answer(
-        "How long do refunds take?",
-        "Five business days with no citation.",
-        chunks,
-        _citation(valid=False, cited=(), available=(1,)),
-    )
-
-    assert invalid["confidence_score"] < valid["confidence_score"]
-
-
-def test_confidence_score_is_bounded_between_zero_and_one():
-    chunks = [Document(page_content="Refunds are issued within five business days.")]
-    metrics = evaluate_answer(
-        "How long do refunds take?", "Five business days. [1]", chunks, _citation(valid=True)
-    )
-    assert 0.0 <= metrics["confidence_score"] <= 1.0
-
-
-def test_confidence_level_matches_score_bands():
-    chunks = [Document(page_content="Refunds are issued within five business days.")]
-
-    high = evaluate_answer(
-        "refunds business days", "Five business days. [1]", chunks, _citation(valid=True)
-    )
-    assert high["confidence_score"] >= 0.7
-    assert high["confidence_level"] == "high"
-
-    low = evaluate_answer(
-        "How long do refunds take?",
-        "No relevant information found.",
-        [],
-        _citation(valid=False, cited=(), available=()),
-    )
-    assert low["confidence_score"] < 0.4
-    assert low["confidence_level"] == "low"
-
-
-def test_evaluator_field_reflects_configured_provider():
-    metrics = evaluate_answer("q", "a", [], _citation(valid=False, cited=(), available=()))
-    assert metrics["evaluator"] == "local"
-    assert metrics["advanced_notes"] == "Local lexical metrics only."
+    assert spearman([1, 2, 3], [1, 2, 3]) == pytest.approx(1.0)
+    assert spearman([1, 2, 3], [3, 2, 1]) == pytest.approx(-1.0)

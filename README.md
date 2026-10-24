@@ -1,311 +1,376 @@
-# Knowledge Service
+# OISSA Knowledge Agent: RAG on Azure
 
-A generic, standalone RAG (Retrieval-Augmented Generation) service: document
-ingestion (Markdown / text / PDF, recursive or semantic chunking, parent-child
-context) and retrieval (hybrid semantic + keyword + optional graph + optional
-web search, reranking, knee-point selection, prompt-injection screening, cited
-generation with evaluation metrics) over MongoDB Atlas.
+A question-answering service over internal documents. It is built with FastAPI on Azure OpenAI and MongoDB Atlas (vector search, keyword search and the knowledge graph).
 
-Extracted from an application's `backend/shared/rag` so any application can
-use it over HTTP instead of embedding the pipeline in its own codebase. It is
-a 1:1 feature port: every retrieval leg, every chunking strategy, every
-endpoint the source implementation had, this service has too. The source
-application's own copy of the code is untouched; this service is additive
-until a follow-up migrates that application to call it instead.
+It offers five retrieval strategies, which can be switched with a flag and validated side by side, plus a router that picks between them:
 
-This service holds **no LLM provider API key** and imports **no provider
-SDK**. Every embedding and chat-completion call is made over HTTP to a
-deployed [`llm-gateway`](../llm-gateway) instance — see
-[Why route through the LLM Gateway](#why-route-through-the-llm-gateway) below.
-
-## Quick start
-
-```bash
-cp .env.example .env
-# Fill in RAG_MONGO_URI (MongoDB Atlas) and RAG_GATEWAY_BASE_URL (a running
-# llm-gateway instance) at minimum.
-
-pip install -r requirements-dev.txt
-make dev          # http://localhost:8090/docs
-```
-
-Ingest a document and ask a question:
-
-```bash
-curl -X POST localhost:8090/v1/ingest \
-  -H "Content-Type: application/json" \
-  -d '{"input_paths": ["/data/docs/policy.pdf"], "chunk_strategy": "recursive"}'
-# -> {"job_id": "...", "status": "pending", ...}
-
-curl localhost:8090/v1/ingest/<job_id>          # poll until "completed"
-
-curl -X POST localhost:8090/v1/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What is the refund window?"}'
-```
-
-Or call it from Python with the bundled SDK:
-
-```python
-from sdk import KnowledgeServiceClient
-
-client = KnowledgeServiceClient(base_url="http://localhost:8090", api_key="sk-...")
-job = await client.ingest(["/data/docs/policy.pdf"])
-answer = await client.query("What is the refund window?")
-print(answer.answer, answer.sources)
-await client.aclose()
-```
-
-## Why route through the LLM Gateway
-
-This service does the retrieval and orchestration; a separate
-[`llm-gateway`](../llm-gateway) deployment does every model call. That split
-means:
-
-- **No provider credentials here.** A leak of this service's config exposes
-  nothing that can spend money on a provider account.
-- **One place to rotate keys, cap spend, and see traffic** across every
-  application that generates text — this service is one more caller of the
-  gateway, tracked and rate-limited exactly like any other.
-- **Model changes are a gateway-side config change**, not a redeploy of this
-  service.
-
-Concretely: `rag/embeddings.py` and `rag/llm.py` never call OpenAI/Anthropic/
-Gemini/Groq — they call `rag/llm_gateway_client.py`, which holds one
-`RemoteLLMClient` and one `GatewayEmbeddingsClient` (vendored from the
-gateway's own `sdk/client.py`, per that module's docstring: "drop this into
-any application that should reach an LLM through the gateway").
-
-### ...and through the API Gateway to get there
-
-`RAG_GATEWAY_BASE_URL` points at the **API gateway's** `/api/llm` prefix, not
-at llm-gateway directly. The gateway strips the prefix and forwards, and that
-extra hop is deliberate: it makes the gateway the single place where
-authentication, per-user and per-account rate limits, budgets and usage
-metering are enforced. Called directly, RAG traffic arrived as one static
-service key — every user's LLM spend landed in the same bucket, no per-user
-budget could apply to it, and the gateway's metering never saw it.
-
-So each outbound call carries **the caller's own token**, not a service
-credential. It is picked up ambiently from `rag/caller_context.py`, bound by
-`app/middleware/auth.py` from the token the gateway forwarded, and attached per
-request by an `httpx.Auth` — so one pooled connection can serve a different
-user on every call. A service API key that authenticated a request *here* is
-deliberately **not** forwarded: it would authenticate as nobody upstream.
-
-Two consequences to know about:
-
-- **A call with no user behind it sends no credential and gets a 401.** The
-  CLI (`scripts/rag_cli.py`) and the test suite have no HTTP request. Point
-  `RAG_GATEWAY_BASE_URL` straight at an llm-gateway, with
-  `RAG_GATEWAY_API_KEY` set, for that kind of work.
-- **A background ingest carries a snapshot of the token that queued it.** A
-  job outliving that token's expiry starts failing its embedding calls and is
-  marked failed. Shorten the documents or lengthen auth-service's
-  `AUTH_ACCESS_TTL_MINUTES` if that bites.
-
-## Endpoints
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| `POST` | `/v1/ingest` | required | Start ingestion from server-side paths |
-| `POST` | `/v1/upload` | required | Upload files (multipart), persist to GridFS, then ingest |
-| `GET` | `/v1/ingest/{job_id}` | required | Poll ingestion job status |
-| `POST` | `/v1/query` | required | Run the full RAG pipeline |
-| `DELETE` | `/v1/documents/{source}` | required | Cascading delete (vector + parent + graph) for a source |
-| `GET` | `/v1/files` | required | List files in the GridFS file store |
-| `GET` | `/v1/stats` | admin | Chunk count + active config snapshot |
-| `GET` | `/v1/config` | admin | Resolved, non-secret configuration |
-| `GET` | `/health`, `/health/live`, `/health/ready` | none | Liveness/readiness (Mongo + LLM Gateway reachability) |
-
-"required" means any caller presenting a valid JWT — the only credential
-this service accepts — there is no human-staff-only gate here, unlike the
-platform-staff dependency the source router used, because this service is
-meant to be called by any number of applications, not just one platform's
-staff UI. "admin" additionally requires `role=admin` on that
-credential.
-
-### Who uploaded what
-
-`POST /v1/ingest` and `POST /v1/upload` both accept an optional `user_id` —
-the end-user this ingestion is on behalf of (mirrors `QueryRequest.user_id`,
-retrieval's equivalent). It's recorded as `uploaded_by` on every resulting
-chunk's metadata, every parent-context document, and the GridFS file record
-(`GET /v1/files` returns it too) — provenance, not access control. When
-omitted, it defaults to the authenticated caller's own principal (the calling
-*application's* identity, e.g. `app-backend`) rather than being left
-blank, via `app/dependencies.py::resolve_user_id`.
-
-This is deliberately separate from `authorized_users`/`authorized_teams`
-(rag/loader.py), which still default to `"*"` (public) regardless of who
-uploaded a document — narrowing visibility to the uploader by default is a
-policy decision for later, once there's a concrete requirement for it; today
-this only makes authorship queryable/auditable.
-
-### Account and tenant isolation
-
-Two hard isolation boundaries scope every chunk and file, both enforced the
-same way in `rag/authorization.py::is_authorized_document`:
-
-| Metadata | What it scopes to | Set at ingest by |
+| Mode | Best for | How it retrieves |
 |---|---|---|
-| `org_id` | the **tenant** (organization) the data belongs to | `POST /v1/ingest` / `/v1/upload` `org_id`, or the JWT's `org_id` claim |
-| `account_id` | the **application** ([auth-service app account](../auth-service/README.md#one-login-for-every-application)) the data was ingested under | `POST /v1/ingest` / `/v1/upload` `account_id`, or the JWT's `account_id` claim |
+| `semantic` | Paraphrased, meaning-based questions | Dense vector search only |
+| `hybrid` | Factual "what / how" questions, codes and names | Vector + keyword (BM25) search, fused with Reciprocal Rank Fusion |
+| `hybrid_graph` | Factual questions that also involve relationships | `hybrid` search and the knowledge graph run in parallel; chunks are fused with RRF and the graph facts are added in front |
+| `graph` | Relationships, multi-hop and "big picture" questions | A knowledge graph (entities, relations, communities) in MongoDB collections |
+| `agentic` | Multi-step and comparative questions | A LangGraph agent that plans, calls search tools, grades evidence and checks its answer |
+| `auto` | Production traffic | Routes each question to the cheapest suitable mode, and escalates when confidence is low |
 
-Both are **hard AND gates**, checked independently and before the permissive
-`authorized_users`/`authorized_teams` OR-list: a chunk tagged with a specific
-value is returned **only** to a query carrying that same value; a chunk left
-unscoped (`"*"`, the default) is visible to everyone. Matching a `user_id` or
-`team_id` never excuses a mismatched `org_id`/`account_id` — that's what makes
-them isolation boundaries rather than another entry in the OR-list.
+Every answer has numbered citations, a confidence label (high / medium / low) with a plain-language reason, and token usage. Access control is enforced in every retriever: users only get answers from documents they are allowed to see.
 
-For a **JWT** caller, both values come *only* from the verified token
-(`org_id`/`account_id` claims, set by `AuthMiddleware`) — a request body or
-query field that disagrees is rejected with 403, never silently overridden
-(`app/dependencies.py::resolve_org_id`/`resolve_account_id`). This is what
-lets `account_id` reflect the application a user chose at sign-in
-(auth-service `POST /auth/me/account`) rather than anything the client asserts.
-With `RAG_AUTH_ENABLED` false — local development and the test suite — there
-is no verified identity to check against, so a client-supplied value is taken
-at its word. That used to be reachable in production by any holder of a static
-`KNOWLEDGE_API_KEYS` entry, which is one of the reasons those were removed.
+> **New here?** Read [docs/workflow-execution.md](docs/workflow-execution.md). It walks through how to run everything, step by step, from a laptop to production.
 
-`GET /v1/files` applies the same two boundaries to the GridFS listing, with
-the same fail-closed default: a caller supplying no `org_id`/`account_id` sees
-only unscoped files, never another tenant's or application's.
+---
 
-## Request flow
+## Contents
 
+- [Architecture](#architecture)
+- [Quick start (local)](#quick-start-local)
+- [Configuration and secrets](#configuration-and-secrets)
+- [Feature flags](#feature-flags)
+- [Choosing the RAG mode](#choosing-the-rag-mode)
+- [API](#api)
+- [Answer quality](#answer-quality)
+- [Security](#security)
+- [Observability](#observability)
+- [Testing and evaluation](#testing-and-evaluation)
+- [Deployment (Azure Pipelines)](#deployment-azure-pipelines)
+- [Repository layout](#repository-layout)
+- [Documentation](#documentation)
+- [Known gaps](#known-gaps)
+
+---
+
+## Architecture
+
+```text
+        Sources (Blob, SharePoint, Confluence, DB, REST, web, uploads)
+                                  │
+              Event Grid ─► Service Bus ─► ingestion worker (Container Apps job)
+                                  │
+   detect type ─► parse ─► clean & govern ─► metadata ─► chunk ─► enrich ─► embed
+                                  │                                    │
+                  MongoDB (graph collections)         MongoDB Atlas Search (vectors + BM25)
+                                  │                                    │
+ User ─► /ui or API ─► auth ─► rate limit ─► question analysis ─► router (semantic | hybrid | hybrid_graph | graph | agentic)
+                                  ─► fuse / rerank / context budget ─► Azure OpenAI
+                                  ─► citations + confidence ─► streamed answer (SSE)
 ```
-POST /v1/query
-  → RequestContextMiddleware   (request ID, access log)
-  → AuthMiddleware             (JWT → principal + role + account_id)
-  → query_controller → query_service → rag.retrieval.query()
-      embed_query → semantic_search → keyword_search → graph_search → web_search
-      → hybrid_fusion (RRF) → parent_child_expand → rerank → knee_point_select
-      → safety_filter (prompt-injection) → augment → generate (→ LLM Gateway)
-      → validate_citations → evaluate
+
+| Concern | Azure service |
+|---|---|
+| API and chat UI | App Service (Linux container); prod has a staging slot for blue-green releases |
+| Background work | Container Apps jobs: event-driven ingestion, nightly reconcile, nightly graph maintenance |
+| Models | Azure OpenAI (chat, utility, embedding; optional vision and Whisper) |
+| Search, graph and ingestion manifest | MongoDB Atlas (Vector Search + Atlas Search; not provisioned by the Bicep, connection string in Key Vault as `mongodb-url`) |
+| Documents and data-lake zones | Storage account (`documents`, `rag-zones`) |
+| Secrets | Key Vault. Everything else uses one managed identity, with no keys. |
+| Optional | Content Safety, Document Intelligence, Language (PII), Redis, Cosmos DB |
+| Monitoring | Log Analytics, Application Insights, alerts, budget, workbook |
+
+More detail is in [docs/architecture.md](docs/architecture.md) and the decision records in [docs/adr/](docs/adr/).
+
+---
+
+## Quick start (local)
+
+**Prerequisites:**
+- Python 3.11+ (3.12 recommended).
+- Azure CLI, signed in with `az login`.
+- Access to an Azure OpenAI resource.
+- A MongoDB Atlas cluster (the free M0 tier works) whose network access list allows your IP. Networks that decrypt TLS can block Atlas authentication.
+
+```bash
+# 1. Install
+python -m venv .venv
+.venv\Scripts\activate                    # macOS/Linux: source .venv/bin/activate
+make install                              # pip install -r requirements-dev.txt + pre-commit
+
+# 2. Configure: copy the template, then set the OpenAI endpoint and the Atlas connection string
+copy .env.example .env                    # macOS/Linux: cp .env.example .env
+#    AZURE_OPENAI_ENDPOINT=https://<openai>.openai.azure.com
+#    MONGODB_URL=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/
+
+# 3. Start the API (collections and Atlas Search indexes are created on startup)
+make dev                                  # http://localhost:8000
+
+# 4. Load the sample documents and ask a question
+make ingest
 ```
 
-Ingestion is fire-and-forget via FastAPI `BackgroundTasks`, tracked in an
-**in-process** job registry — status is lost on restart and not shared across
-workers, exactly matching the source implementation. Run this service with a
-single worker (the Dockerfile default) and scale by replica, not worker
-count, until that becomes a MongoDB-backed registry (`RAG_INGESTION_JOBS_COLLECTION`
-is declared for this but not yet wired up — a known gap carried over
-faithfully from the source, not introduced here).
+Then open **http://localhost:8000/ui** for the chat page, or **http://localhost:8000/docs** for the interactive API:
+
+```bash
+curl -X POST localhost:8000/api/v1/chat -H "Content-Type: application/json" \
+  -d '{"query": "Which file formats are supported?"}'
+```
+
+Leave the API keys empty: locally, `az login` is used for Entra ID (keyless) authentication. Locally, `AUTH_MODE=none`, so no sign-in is needed and ACLs are not enforced.
+
+---
+
+## Configuration and secrets
+
+Every setting is an environment variable. [.env.example](.env.example) lists all of them, with comments and `TODO` placeholders.
+
+| What | Local | QA / Prod |
+|---|---|---|
+| Service URLs and flags (`RAG_MODE`, endpoints, tuning) | `.env` | `infra/<env>.bicepparam` → App Service settings (most are derived from the resources Bicep creates) |
+| Secrets (`API_KEY`, connector credentials, optional keys) | `.env`, or blank plus `AZURE_KEY_VAULT_URL` | The environment's Key Vault |
+| Source lists, ACL mapping, glossary, ontology, Cypher templates | `config/*.yaml` | Same files, baked into the image |
+
+- **Precedence** (highest first): environment variables → Key Vault → `.env` → defaults. A blank value never overrides anything.
+- **Key Vault names:** the setting name in lower case, with dashes instead of underscores. For example, `API_KEY` → `api-key`, and `CONFLUENCE_API_TOKEN` → `confluence-api-token`.
+
+  ```bash
+  az keyvault secret set --vault-name <kv-name> --name api-key --value <secret>
+  ```
+- **Validation:** missing or invalid settings for the enabled features are logged at startup and reported by `GET /api/v1/health/ready`. The app does not crash-loop.
+
+`.env` is git-ignored. Never commit secrets.
+
+---
+
+## Feature flags
+
+Most steps of the question and ingestion pipelines can be switched on or off. [docs/feature-flags.md](docs/feature-flags.md) shows each step, the flag that controls it, what changes when it's on or off, which flags add LLM calls, and ready-made profiles (cheapest, best quality, evaluation, production).
+
+The flags you're most likely to change:
+
+| Flag | Default | What it switches |
+|---|---|---|
+| `RAG_MODE` / `RAG_ENABLED_MODES` | `semantic` / `semantic` | Default retrieval strategy, and which strategies are available |
+| `QUERY_ANALYSIS_ENABLED` | `true` | LLM question analysis: follow-up rewrite, intent, filters |
+| `ASSISTANT_SCOPE` | blank | What counts as in scope. Blank or too narrow, and valid questions get the "outside what I can help with" reply. |
+| `RETRIEVAL_MODE` | `hybrid` | `vector`, `hybrid` (vector + BM25) or `semantic_hybrid` (+ Azure semantic ranker) |
+| `SEMANTIC_QUERY_TRANSFORM` | `none` | `multi_query`, `hyde` or `step_back` query rewriting |
+| `RERANKER` | `none` | `llm` or `cohere` reranking |
+| `RETRIEVAL_KNEE_CUTOFF` | `false` | Drops passages after the sharp drop in scores |
+| `QUALITY_JUDGE` | `request` | LLM judge (groundedness, relevance): `off`, `request` or `always` |
+| `ANSWER_CACHE_ENABLED` | `false` | Reuses answers to similar questions. Keep it off while testing. |
+| `RAG_ESCALATION_ENABLED` | `false` | Retries low-confidence answers in a stronger mode |
+| `INGESTION_TARGETS` | `vector` | Adds the knowledge graph with `graph` |
+| `AZURE_OPENAI_VISION_DEPLOYMENT` | blank | Describes image files, and pictures and scanned pages inside PDFs, so diagrams become searchable. Blank: those images are ignored. |
+| `CHUNK_PARENT_SIZE`, `ENRICH_*` | off | Parent-child chunking and LLM enrichment at ingestion (re-ingest with `--force` after changing) |
+
+Restart the API after changing any flag.
+
+---
+
+## Choosing the RAG mode
+
+| Setting | Purpose | QA | Prod |
+|---|---|---|---|
+| `RAG_MODE` | Default mode: `semantic`, `hybrid`, `hybrid_graph`, `graph`, `agentic` or `auto` | `semantic` | `hybrid` (change after validation) |
+| `RAG_ENABLED_MODES` | Modes this environment builds and accepts | all three | only the validated ones |
+| `RAG_ALLOW_MODE_OVERRIDE` | Lets a request pick `"rag_mode"` | `true` | `false` |
+| `RAG_ESCALATION_ENABLED` | Retries a low-confidence answer with a stronger mode | `true` | `false` |
+| `INGESTION_TARGETS` | Where ingestion writes: `vector`, `graph` | `vector,graph` | `vector` |
+
+To compare the modes on the same question, add `"rag_mode"` and `"include_trace": true` to a chat request. To compare them on the whole golden set, run `python scripts/run_eval.py --rag-mode all --judge`.
+
+How each mode works:
+- **Semantic:** question analysis (follow-up rewrite, intent, filters) → optional multi-query or HyDE → hybrid search with ACL filters → MMR → parent or sentence-window expansion → rerank.
+- **Graph:** entity linking → local, path, hybrid, global (community reports), DRIFT, dual-level or Cypher-template search → PageRank ranking. It falls back to semantic search when no entities match.
+- **Agentic:** route → plan → retrieve with tools (`AGENTIC_TOOLS`) → grade → refine → generate → check. Steps, tokens and time are limited.
+
+### Vector and keyword search on MongoDB Atlas
+
+Chunks are documents in `MONGODB_CHUNKS_COLLECTION` (`_id` = chunk id). Two Atlas Search indexes are created on startup (or with `make create-index`). They build in the background, so a new collection answers searches a few seconds after the first write.
+
+| Step | How |
+|---|---|
+| Vector | `$vectorSearch` (HNSW, cosine) on `MONGODB_VECTOR_INDEX`; `numCandidates` = top_k × `MONGODB_NUM_CANDIDATES_FACTOR` |
+| Keyword | `$search` (Lucene BM25, `MONGODB_TEXT_ANALYZER`) over title, section path and content on `MONGODB_SEARCH_INDEX` |
+| Filters | Collection, ACL, kind and metadata filters are applied inside the query (a `$vectorSearch` pre-filter, or `$search` compound filters) |
+| Hybrid fusion | RRF in the app, k = 60 |
+| Semantic reranking (`semantic_hybrid`) | `MONGODB_SEMANTIC_RERANKER`: `llm` (slower), `cohere` or `none` |
+
+The graph lives in the same database, in `<MONGODB_GRAPH_PREFIX>_*` collections: chunks with their mentioned entity keys, entities (with description embeddings for entity linking), relations, claims, sections and documents. Traversal runs hop by hop with indexed queries. There is no Cypher engine, so `GRAPH_SEARCH_MODE=cypher` and the agent's `graph_query` tool fall back to local graph search.
+
+`VECTOR_STORE_PROVIDERS`, the per-request `"vector_store"` field and `--vector-store all` still exist so another store can be added for side-by-side comparison. Today the only provider is `mongo`.
+
+---
+
+## API
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/health`, `/api/v1/health/ready` | Liveness and readiness (config + every enabled store) |
+| GET | `/api/v1/rag/modes` | Default mode, enabled modes, and whether override is allowed |
+| POST | `/api/v1/chat` | Grounded answer with citations, confidence and usage |
+| POST | `/api/v1/chat/stream` | The same, as Server-Sent Events: `step`* → `citations` → `token`* → `quality` → `done` |
+| POST | `/api/v1/retrieval` | Retrieved passages only, without an answer |
+| POST | `/api/v1/feedback` | 👍 / 👎 and a comment on an answer, by `response_id` |
+| DELETE | `/api/v1/conversations/me` | Delete the caller's chat history |
+| POST | `/api/v1/ingestion` | Ingestion job for a source URI: a local path, `blob://`, `sharepoint://`, `confluence://`, `db://`, `api://` or `https://` |
+| POST | `/api/v1/ingestion/upload` | Ingest one uploaded file (with optional `acl` and `collection`) |
+| GET | `/api/v1/ingestion/{job_id}` | Job status |
+| GET | `/api/v1/ingestion/manifest` | Status of each document: indexed, skipped, quarantined or failed |
+| DELETE | `/api/v1/ingestion/sources?source=` | Remove a document from every store |
+| DELETE | `/api/v1/ingestion/collections/{name}` | Remove a whole collection |
+| GET | `/ui` | Built-in chat page (`UI_ENABLED`) |
+| GET | `/api/v1/admin/rag/config` | Admin: enabled modes, selectable answer models, every model in play, retrieval settings, eval thresholds and golden set |
+| POST | `/api/v1/admin/rag/evaluate` | Admin: one scored run for a mode and answer model (uncached): answer, top-k citations, trace, judge scores and retrieval metrics (hit, recall, MRR, nDCG, citation precision/recall, correctness) |
+
+Everything except the health endpoints and `/ui` requires authentication when `AUTH_MODE` is not `none`. Send `Authorization: Bearer <Entra token>` or `X-API-Key`. The `/admin` endpoints also require the `ADMIN_REQUIRED_ROLE` app role (default `SA_Admin`) for Entra users; they back the RAG Studio page in oissaagent-ui.
+
+---
+
+## Answer quality
+
+Each `/chat` response (and the `quality` event of the stream) includes:
+
+```json
+{
+  "answer": "Staff receive 25 days of annual leave [1].",
+  "citations": [{"index": 1, "title": "Leave policy", "page": 3, "cited": true, "snippet": "..."}],
+  "quality": {
+    "confidence": "high",
+    "explanation": "Every statement cites a source; reviewer scores: supported 5, relevant 4.",
+    "signals": {"citation_coverage": 1.0, "invalid_citations": []},
+    "judge": {"groundedness": 5, "answer_relevance": 4, "context_relevance": 4}
+  },
+  "usage": {"total_tokens": 2492, "llm_calls": 2},
+  "latency_ms": 2140.5
+}
+```
+
+- **Signals** are free and computed for every answer: was it answered, citation coverage, and citations that don't exist.
+- The **LLM judge** scores groundedness and relevance from 1 to 5. It runs when the request sets `"evaluate": true`, or on a background sample of answers (`QUALITY_JUDGE_SAMPLE_RATE`).
+- **Confidence** is **low** when nothing is cited or the judge scores ≤ 2. It is **high** when the answer is well cited and the judge scores ≥ 4. Otherwise it is **medium**.
+
+---
+
+## Security
+
+| Control | Implementation |
+|---|---|
+| Sign-in | `AUTH_MODE`: `entra` (validated Entra ID tokens), `api_key`, or `entra+api_key`. `none` is for local use only. |
+| Document permissions | Every chunk and graph entity carries an ACL. The user's ID and group IDs filter **every** store query. The LLM never decides access. |
+| Ingestion rights | `INGESTION_REQUIRED_ROLE` (an Entra app role) |
+| Prompt injection | Checked on questions, quarantined at ingestion, and flagged in retrieved passages. Azure Content Safety is used when enabled. |
+| Abuse | Per-user rate limits (`RATE_LIMIT_PER_MINUTE`) and input validation |
+| Privacy | PII masked in logs, with optional PII masking in documents. Deletion endpoints exist for users and sources. Every query and ingest is audited. |
+| Infrastructure | Managed identity only. Local auth is disabled where possible, and TLS 1.2+ is required. |
+
+`tests/integration/test_security.py` and `test_isolation_redteam.py` prove these controls. The manual checklist is [docs/runbooks/red-team.md](docs/runbooks/red-team.md).
+
+---
 
 ## Observability
 
-Same pattern as the LLM Gateway this service calls — no OpenTelemetry/
-Prometheus/Sentry, just:
+- **Logs:**
+  - JSON to stdout and App Insights `traces`.
+  - One `rag_answer` event per answer, with mode, confidence, latency and tokens.
+  - The question text is logged only if `LOG_QUESTION_TEXT=true`.
+- **Traces:** an OpenTelemetry span for every RAG step (`rag.vector_search`, `rag.graph_traversal`, `rag.grade`, …), plus the dependency calls.
+- **Metrics:** `rag.request.duration`, `rag.answers`, `rag.quality.score`, `rag.llm.tokens`, `rag.feedback` and the ingestion counters, split by RAG mode.
+- **Correlation:** the `X-Request-ID` header equals `response_id`.
+- **Dashboards and alerts:** Bicep deploys:
+  - a workbook with traffic, quality, latency and cost per mode, and unanswered questions;
+  - alerts for errors, latency, quality drops and token spikes;
+  - a budget.
 
-- **Structured JSON logs** (`app/logging_config.py`), one object per line,
-  `KNOWLEDGE_LOG_FORMAT=text` for a local terminal.
-- **Request-ID correlation** (`rag/log_context.py`) — a contextvar bound once
-  per request by `RequestContextMiddleware`, read automatically by every log
-  line emitted while handling it, including deep inside the pipeline and the
-  LLM Gateway client calls, with zero parameter threading.
-- **Access log** — one line per request (method, path, status, latency,
-  principal), health-check paths excluded to avoid noise.
-- **`GET /v1/stats` / `GET /v1/config`** — operational visibility, not
-  service traffic, mirroring the gateway's own admin endpoints.
-- **`GET /health/ready`** — reports MongoDB and LLM Gateway reachability
-  individually, so a caller can tell which dependency degraded.
+  Ready-made queries are in [infra/monitoring/rag-queries.kql](infra/monitoring/rag-queries.kql).
 
-## Feature status
+---
 
-| Feature | Default | Notes |
-|---|---|---|
-| Recursive chunking | on | `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` |
-| Semantic chunking | opt-in per request | `chunk_strategy: "semantic"` — costs one embedding call per paragraph |
-| Parent-child context expansion | always on | broader context returned even though children were matched |
-| Hybrid retrieval (semantic + keyword) | always on | Atlas `$vectorSearch` + in-memory BM25 |
-| Graph retrieval (4th→3rd leg) | off | `RAG_GRAPH_RETRIEVAL_ENABLED=true`, backend `mongo` (default recommendation) or `neo4j` |
-| Web search (4th leg) | off | `RAG_WEB_SEARCH_ENABLED=true` + `TAVILY_API_KEY`, fails open to no results |
-| Cross-encoder reranking | off | `RAG_USE_CROSS_ENCODER_RERANKER=true`, else lexical local rerank |
-| Prompt-injection screening | heuristic always on | LLM classifier opt-in via `RAG_USE_LLM_PROMPT_INJECTION_CLASSIFIER=true` |
-| General-knowledge fallback | on | `RAG_GENERAL_KNOWLEDGE_FALLBACK`. A question the knowledge base has nothing on is still answered — from the model's own knowledge, first line `(Not from the knowledge base.)`, no citations — instead of "the context does not contain this". With nothing retrieved the bare question is sent so the gateway routes it by category; with off-topic chunks the grounded prompt permits the labelled answer. `false` = strict grounding (refuse) |
-| Citation validation | always on | flags missing/invalid `[n]` markers in the generated answer — a labelled general-knowledge answer reports `missing_citations: true` by design |
-| Answer evaluation | local metrics always on | faithfulness, precision, recall, answer relevance, blended into `confidence_score` (0-1) + `confidence_level` (high/medium/low) on every query response; `RAG_ADVANCED_EVAL_PROVIDER=ragas\|deepeval\|llm` for deeper scoring |
-| PDF layout extraction (tables/figures) | on | `pdfplumber`, falls back to `pypdf` |
-| PDF OCR | off | `RAG_ENABLE_PDF_OCR=true`, needs system `poppler` + `tesseract` (not in the base image) |
-| Authorization filtering | always on | `authorized_users` / `authorized_teams` metadata, `*` = public |
+## Testing and evaluation
 
-## Layout
-
-```
-rag/                          framework-free RAG core (no FastAPI import)
-  config.py                     RAGSettings — env prefix RAG_
-  auth.py                       JWTValidator (RAG_AUTH_ENABLED)
-  log_context.py                contextvar request-ID correlation
-  caller_context.py             contextvar caller token, for outbound gateway calls
-  mongo_connection.py           pooled Motor client, index management
-  llm_gateway_sdk.py             vendored copy of llm-gateway's sdk/client.py
-  llm_gateway_client.py          singleton RemoteLLMClient / GatewayEmbeddingsClient
-  embeddings.py                  get_embeddings() → GatewayEmbeddingsClient
-  loader.py                      Markdown/text/PDF → LangChain Documents
-  chunking.py                    recursive + semantic chunking, parent groups
-  vector_store.py                Atlas $vectorSearch, BM25 keyword search, RRF fusion
-  parent_store.py                MongoDB parent-document store
-  graph_store.py                 Mongo/Neo4j graph-hybrid retrieval, entity extraction
-  file_store.py                  MongoDB GridFS raw-file storage
-  web_search.py                  Tavily live web-search retrieval leg
-  rerank.py                      local lexical + optional cross-encoder reranking
-  security.py                    prompt-injection heuristics + optional LLM classifier
-  authorization.py               user/team ACL filtering of retrieval results
-  citations.py                   validates [n] citation markers
-  evaluation.py                  local faithfulness/precision/recall/relevance -> confidence_score + RAGAS/DeepEval/LLM-judge hooks
-  llm.py                         prompt construction + generation via the LLM Gateway
-  ingestion.py                   LangGraph orchestration — ingestion pipeline only
-  retrieval.py                   LangGraph orchestration — query/retrieval pipeline only
-app/                           thin FastAPI HTTP layer
-  main.py                        create_app(), lifespan, middleware/router wiring
-  config.py                      KnowledgeServiceSettings — env prefix KNOWLEDGE_
-  dependencies.py                principal/role Depends() providers
-  errors.py                      GatewayError → HTTP status mapping
-  logging_config.py              JSON/text structured logging
-  controllers/                   one router per resource
-  models/                        pydantic request/response schemas
-  services/                      orchestration between HTTP and rag/
-  middleware/                    auth.py, request_context.py
-sdk/                           HTTP client for other applications to call this service
-scripts/
-  mint_token.py                  mint a JWT for local testing
-  rag_cli.py                     local ingest/ask CLI, no HTTP server needed
-tests/
-  conftest.py                    shared fixtures (hermetic env, TestClient)
-  unit/                          pure logic, no network/Mongo/FastAPI app
-  integration/                   real app/TestClient or real pipeline wiring,
-                                  with only the Mongo/LLM Gateway I/O boundary mocked
+```bash
+make test                     # unit + integration tests (in-memory fakes; never call Azure)
+make lint                     # ruff lint + format check
+make typecheck                # mypy
+make bicep-check              # compile-check infra/ (or: az bicep build --file infra/main.bicep)
+make eval                     # golden-set retrieval metrics for every enabled mode
+python scripts/run_eval.py --rag-mode all --judge --gate     # what the CI quality gate runs
+python scripts/run_ablation.py                               # compare configuration variants
+locust -f tests/load/locustfile.py --host https://<qa-app>   # load test (QA only)
 ```
 
-Ingestion and retrieval are deliberately separate modules (`rag/ingestion.py`,
-`rag/retrieval.py`) rather than one `graph.py` — they are independent
-concerns with different scaling and failure characteristics: ingestion is a
-write-heavy background job (see `app/services/ingest_service.py`), retrieval
-is a read-heavy, latency-sensitive request path. Either can move to its own
-worker/process later without the other's dependencies coming along.
+| Eval asset | Purpose |
+|---|---|
+| `evals/golden_set.jsonl` | Questions with expected sources and answers, and a `question_type` |
+| `evals/thresholds.yaml` | Minimum scores the CI gate enforces |
+| `evals/results/baseline.json` | The reference run that regressions are measured against (`--save-baseline`) |
+| `evals/ablations.yaml` | Variants: chunk size, retrieval mode, reranker, enrichment, graph settings |
+| `evals/*_gold.jsonl`, `human_labels.jsonl` | Graph extraction, linking and Cypher accuracy; judge calibration |
+| `data/sample/toy-room-inventory.pdf` | A small test PDF for the `toy-q*` golden-set questions. Rebuild it with `python scripts/make_sample_pdf.py`. |
 
-## Configuration
+To measure the effect of a flag change, see [docs/feature-flags.md, section 6](docs/feature-flags.md#6-testing-a-flag-change).
 
-See [`.env.example`](.env.example) for the full, annotated list. Two
-prefixes: `KNOWLEDGE_*` (how this service is exposed) and `RAG_*` (what the
-pipeline does and which LLM Gateway it calls).
+---
 
-## Deployment checklist
+## Deployment (Azure Pipelines)
 
-- [ ] `RAG_MONGO_URI` set to an Atlas cluster (Atlas Vector Search requires
-      Atlas, or an Atlas-compatible deployment with Search support)
-- [ ] `RAG_GATEWAY_BASE_URL` points at the **API gateway's** `/api/llm`
-      prefix (e.g. `https://<gateway>/api/llm`), so LLM traffic is
-      authenticated, budgeted and metered like everything else.
-      `RAG_GATEWAY_API_KEY` is only for pointing straight at an llm-gateway
-- [ ] `RAG_EMBEDDING_DIMENSIONS` matches that gateway's actual
-      `LLM_EMBEDDING_DIMENSIONS` (mismatched dimensions corrupt the vector index)
-- [ ] `RAG_AUTH_ENABLED=true` + `RAG_JWT_SECRET` (matching auth-service's
-      `AUTH_JWT_SECRET`) — the only credential mechanism there is, so without
-      it the service is open to anyone who finds the URL
-- [ ] `KNOWLEDGE_DOCS_ENABLED=false` if the API is reachable from the public internet
-- [ ] Single worker / replica-based scaling until the ingestion job registry
-      is MongoDB-backed (see Request flow above)
+```text
+push to develop/main
+  └─ Build ─────────── lint · tests · Bicep compile · Docker build (+ push to ACR)
+       └─ DeployQA ──── Bicep → container → smoke test
+            └─ QualityGate ── golden set against QA; fails on regressions
+                 └─ DeployProd (main only, manual approval)
+                      Bicep → staging slot → smoke test → swap into production
+```
+
+- The same image (tagged with the build ID) is promoted from QA to Prod. It is never rebuilt.
+- Per-environment values are in [infra/qa.bicepparam](infra/qa.bicepparam) and [infra/prod.bicepparam](infra/prod.bicepparam). The optional services are turned on with the `enable*` parameters.
+- To roll back, swap the slots back. See [docs/runbooks/rollback.md](docs/runbooks/rollback.md).
+
+The one-time Azure DevOps setup and the first deployment are described step by step in [docs/workflow-execution.md](docs/workflow-execution.md#5-first-deployment-to-azure).
+
+---
+
+## Repository layout
+
+```text
+src/app/
+  main.py               app factory, lifespan, /ui
+  core/                 config, Key Vault source, auth, rate limit, audit, PII, telemetry, metrics
+  api/                  dependency wiring (deps.py) and v1 endpoints
+  rag/
+    strategies/         semantic (+ hybrid), hybrid_graph, graph, agentic, registry/router
+    agents/             agent tools
+    query/              question analysis, glossary, query transforms
+    retrieval/          retriever, rerankers
+    context/            fusion, MMR, ordering, token budget
+    vectorstore/        MongoDB Atlas vector + keyword search
+    graph/              MongoDB graph store, extraction, ontology, communities
+    ingestion/          connectors, parsing, governance, chunking, enrichment, manifest, pipeline
+    generation/         prompts and Azure OpenAI client
+    evaluation/         answer quality and the offline harness
+  services/             chat/retrieval, ingestion, conversations
+  prompts/              versioned prompt templates (YAML)
+  static/chat.html      chat UI
+config/                 YAML placeholders (sources, ACLs, glossary, ontology, ...)
+scripts/                ingest, worker, reconcile, graph maintenance, eval, tooling
+evals/                  golden set, thresholds, ablations, gold sets
+tests/                  unit/, integration/, load/
+infra/                  main.bicep, modules/, *.bicepparam, monitoring/
+pipelines/              azure-pipelines.yml, templates/, variables/
+docs/                   architecture, ADRs, workflow, runbooks, user guide
+```
+
+---
+
+## Documentation
+
+| Document | Read it when |
+|---|---|
+| [docs/workflow-execution.md](docs/workflow-execution.md) | You want to run, deploy or operate the system |
+| [docs/feature-flags.md](docs/feature-flags.md) | You want to know what a flag does, or which flags to turn on or off |
+| [docs/architecture.md](docs/architecture.md) | You need the component and security overview |
+| [docs/requirements.md](docs/requirements.md) | You are filling in the business inputs (targets, budgets, ACL model) |
+| [docs/adr/](docs/adr/) | You want to know why a technology was chosen |
+| [docs/user-guide.md](docs/user-guide.md) | You are writing material for end users |
+| [docs/runbooks/](docs/runbooks/) | You are re-indexing, rolling back, handling an incident, or running a red team |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | You are adding a source, file format, tool or prompt |
+| [RAG-E2E-Tasks-Semantic-Graph-Agentic.md](RAG-E2E-Tasks-Semantic-Graph-Agentic.md) | You want the build checklist and its status |
+
+---
+
+## Known gaps
+
+- **Private networking and WAF:** private endpoints, VNet integration, and Front Door or API Management in front of the app.
+- **LLM gateway:** an API Management AI gateway for shared quotas and token logging.
+- **MongoDB least privilege:** use an Atlas database user scoped to `MONGODB_DATABASE` (readWrite + search index management), not an admin user.
+- **Agents:** a SQL tool, sandboxed code execution and MCP exposure for agent tools.
+- **Diagrams drawn in PDFs:** pictures inside PDFs are described by the vision model, but diagrams drawn with lines, text and small logos (typical of Visio and PowerPoint exports) are not. Only their text labels are indexed. The fix is to render such pages as images (for example with `pypdfium2`) and describe the whole page. Details: [docs/workflow-execution.md, 2.2.1](docs/workflow-execution.md#221-images-and-diagrams).
+- **Placeholders to fill:** search the repository for `TODO`. The full list is in [docs/workflow-execution.md](docs/workflow-execution.md#4-fill-in-the-placeholders).

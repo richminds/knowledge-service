@@ -1,0 +1,33 @@
+# Ablations (S-34..S-38, G-61, G-62, A-50) — placeholders; adjust to what you are tuning.
+# env: settings overrides for the variant. ingest: re-ingest into its own collection when the
+# change affects indexing (chunking, embeddings, enrichment).
+golden: evals/golden_set.jsonl
+variants:
+  - name: baseline-hybrid
+    env: {RETRIEVAL_MODE: hybrid, RERANKER: none}
+    modes: [semantic]
+  - name: dense-only
+    env: {RETRIEVAL_MODE: vector}
+    modes: [semantic]
+  - name: semantic-ranker
+    env: {RETRIEVAL_MODE: semantic_hybrid}
+    modes: [semantic]
+  - name: llm-reranker
+    env: {RERANKER: llm}
+    modes: [semantic]
+  - name: multi-query
+    env: {SEMANTIC_QUERY_TRANSFORM: multi_query}
+    modes: [semantic]
+  - name: chunks-512
+    env: {CHUNK_SIZE: "512", CHUNK_OVERLAP: "64"}
+    ingest: {source: sample/}
+    collection: ablation-512
+    modes: [semantic]
+  - name: contextual-enrichment
+    env: {ENRICH_CONTEXTUAL: "true", ENRICH_QUESTIONS: "3"}
+    ingest: {source: sample/}
+    collection: ablation-enriched
+    modes: [semantic]
+  - name: graph-vs-agentic
+    env: {GRAPH_MAX_HOPS: "2"}
+    modes: [semantic, graph, agentic]

@@ -1,41 +1,48 @@
-.PHONY: install install-dev dev run test test-cov lint fmt docker docker-up docker-down token
-
-PY ?= python
+.PHONY: install dev run test lint format typecheck check docker-build docker-run ingest create-index eval eval-vector bicep-check
 
 install:
-	$(PY) -m pip install -r requirements.txt
+	pip install -r requirements-dev.txt
+	pre-commit install
 
-install-dev:
-	$(PY) -m pip install -r requirements-dev.txt
-
-# Reload loop on KNOWLEDGE_PORT (default 8090). Swagger: http://localhost:8090/docs
 dev:
-	$(PY) -m uvicorn app.main:app --reload --port $${KNOWLEDGE_PORT:-8090}
+	uvicorn app.main:app --app-dir src --reload --port 8000
 
 run:
-	$(PY) run.py
+	uvicorn app.main:app --app-dir src --host 0.0.0.0 --port 8000
 
 test:
-	$(PY) -m pytest -q
-
-test-cov:
-	$(PY) -m pytest --cov=app --cov=rag --cov=sdk --cov-report=term-missing
+	pytest --cov=src --cov-report=term-missing
 
 lint:
-	$(PY) -m ruff check app rag sdk tests
+	ruff check src tests scripts
+	ruff format --check src tests scripts
 
-fmt:
-	$(PY) -m ruff check --fix app rag sdk tests
+format:
+	ruff check --fix src tests scripts
+	ruff format src tests scripts
 
-docker:
-	docker build -t knowledge-service:latest .
+typecheck:
+	mypy src
 
-docker-up:
+check: lint typecheck test
+
+docker-build:
+	docker build -t oissa-rag-agent:local .
+
+docker-run:
 	docker compose up --build
 
-docker-down:
-	docker compose down
+ingest:
+	python scripts/ingest_cli.py --source sample/ --collection default --targets vector,graph
 
-# Token minting is gone: this service no longer validates tokens, so there is
-# nothing to mint one against. Drive it through the API gateway, or run with
-# RAG_AUTH_ENABLED=false for local work.
+create-index:
+	python scripts/create_index.py
+
+eval:
+	python scripts/run_eval.py --golden evals/golden_set.jsonl --top-k 5 --rag-mode all
+
+eval-vector:  ## every mode on every vector store (VECTOR_STORE_PROVIDERS), with the LLM judge
+	python scripts/run_eval.py --golden evals/golden_set.jsonl --top-k 5 --rag-mode all --vector-store all --judge
+
+bicep-check:  ## compile-check infra/ without the Bicep CLI (uses the VS Code Bicep extension)
+	python scripts/check_bicep.py --strict

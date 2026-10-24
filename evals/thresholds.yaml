@@ -1,0 +1,17 @@
+# CI / release quality gate (C-213, S-40, G-63, A-52, I-07) — placeholders; set from the
+# baseline run (C-212) agreed with stakeholders (C-009, C-010).
+# Keys: "all" applies to every mode; per-mode sections override. Suffix _max = upper limit.
+all:
+  hit: 0.7
+  recall: 0.6
+  citation_precision: 0.6
+  faithfulness: 3.5          # judge 1-5 (only when run with --judge)
+  answer_relevance: 3.5
+  latency_ms_max: 15000
+semantic:
+  mrr: 0.5
+graph:
+  hit: 0.5
+agentic:
+  tokens_max: 60000
+  agent_redundant_calls_max: 0.5

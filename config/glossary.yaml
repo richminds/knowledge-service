@@ -1,0 +1,14 @@
+# Domain glossary (placeholder) — used for acronym expansion in questions (C-162) and
+# keyword (BM25) synonyms (S-08). Replace the examples with your organisation's terms.
+# Path is configurable with GLOSSARY_PATH.
+
+acronyms:
+  HR: Human Resources
+  WBG: World Bank Group
+  ESF: Environmental and Social Framework
+  # TODO: add organisation-specific acronyms
+
+synonyms:
+  leave: [vacation, time off, annual leave]
+  procurement: [purchasing, sourcing]
+  # TODO: add domain synonyms

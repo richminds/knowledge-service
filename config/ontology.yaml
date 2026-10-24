@@ -1,0 +1,41 @@
+# Knowledge-graph ontology (G-03, G-04) — placeholder; adapt to your domain.
+# Extraction may only produce these types (G-09, G-14). Synonyms let the validator remap
+# what the model returns; anything unmapped becomes Concept / RELATED_TO (or is dropped
+# when strict: true).
+version: 1
+strict: false
+
+entity_types:
+  Person: {description: "A named individual", synonyms: [Employee, Staff, Manager, Official]}
+  Organization: {description: "Company, agency, government body, unit or team", synonyms: [Company, Agency, Department, Unit, Team, Institution]}
+  Policy: {description: "Policy, directive, guideline, standard or procedure", synonyms: [Directive, Guideline, Procedure, Rule, Standard, Regulation]}
+  Project: {description: "Project, programme, operation or initiative", synonyms: [Program, Programme, Operation, Initiative]}
+  System: {description: "IT system, application, platform or tool", synonyms: [Application, Platform, Tool, Software]}
+  Location: {description: "Country, region, city or office", synonyms: [Country, Region, City, Office, Place]}
+  Document: {description: "Named document, report or form", synonyms: [Report, Form, Publication]}
+  Topic: {description: "Subject area or concept", synonyms: [Concept, Theme, Area]}
+  Date: {description: "A specific date or period", synonyms: [Period, Year]}
+
+relation_types:
+  MANAGES: {description: "A person/organization manages or leads B", synonyms: [LEADS, HEADS, SUPERVISES, RUNS]}
+  PART_OF: {description: "A is part of / belongs to B", synonyms: [BELONGS_TO, MEMBER_OF, WITHIN]}
+  OWNS: {description: "A owns or is responsible for B", synonyms: [RESPONSIBLE_FOR, MAINTAINS]}
+  APPLIES_TO: {description: "A policy/rule applies to B", synonyms: [GOVERNS, COVERS, REGULATES]}
+  DEPENDS_ON: {description: "A depends on / requires B", synonyms: [REQUIRES, USES]}
+  LOCATED_IN: {description: "A is located in B", synonyms: [BASED_IN]}
+  FUNDS: {description: "A finances B", synonyms: [FINANCES, SUPPORTS]}
+  REPLACES: {description: "A supersedes B", synonyms: [SUPERSEDES]}
+  APPROVES: {description: "A approves B", synonyms: [AUTHORIZES, AUTHORISES]}
+  RELATED_TO: {description: "Any other relationship", synonyms: []}
+
+# Few-shot examples shown to the extractor (G-08). Replace with real domain examples.
+examples:
+  - text: "The Human Resources Department manages the Annual Leave Policy, which applies to all staff in the Nairobi office."
+    output:
+      entities:
+        - {name: Human Resources Department, type: Organization, description: "Department responsible for staff matters"}
+        - {name: Annual Leave Policy, type: Policy, description: "Policy governing staff annual leave"}
+        - {name: Nairobi office, type: Location, description: "Office in Nairobi"}
+      relations:
+        - {source: Human Resources Department, target: Annual Leave Policy, type: MANAGES, description: "HR manages the policy", weight: 0.9}
+        - {source: Annual Leave Policy, target: Nairobi office, type: APPLIES_TO, description: "Applies to staff in Nairobi", weight: 0.8}

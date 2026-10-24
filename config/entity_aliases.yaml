@@ -1,0 +1,15 @@
+# Entity resolution (G-17) and canonicalisation (G-18) — placeholder.
+# Each canonical entity lists aliases that should merge into it; `id` links it to a
+# master-data / external knowledge-base identifier.
+entities:
+  - name: World Bank Group
+    type: Organization
+    id: TODO-mdm-0001
+    aliases: [WBG, The World Bank Group, World Bank]
+  - name: Human Resources Department
+    type: Organization
+    aliases: [HR, HRD, Human Resources]
+  # - name: International Business Machines
+  #   type: Organization
+  #   id: wikidata:Q37156
+  #   aliases: [IBM]

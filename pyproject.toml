@@ -1,51 +1,83 @@
 [project]
-name = "knowledge-service"
-version = "1.0.0"
-description = "Generic RAG service — document ingestion + hybrid retrieval + cited generation over MongoDB Atlas. HTTP service extracted from a monolith's shared/rag, calling an LLM Gateway for every model invocation."
+name = "oissa-rag-agent"
+version = "0.1.0"
+description = "RAG-based knowledge agent service (ingestion + retrieval) built with FastAPI"
 requires-python = ">=3.11"
+readme = "README.md"
 dependencies = [
-    "fastapi>=0.111",
-    "uvicorn[standard]>=0.30",
-    "pydantic>=2.7",
-    "pydantic-settings>=2.3",
-    "httpx>=0.27",
-    "python-dotenv>=1.0",
-    "PyJWT>=2.8",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings[azure-key-vault]>=2.7.0",
+    "httpx>=0.27.0",
     "python-multipart>=0.0.9",
-    "motor>=3.3",
-    "langgraph>=0.1,<1.0",
-    "langchain-core>=0.2,<1.0",
-    "langchain-community>=0.2,<1.0",
-    "langchain-text-splitters>=0.2,<1.0",
-    "rank-bm25>=0.2",
-    "numpy",
-    "scikit-learn",
-    "pypdf>=4.0",
-    "pdfplumber>=0.11",
+    "tenacity>=8.5.0",
+    "structlog>=24.1.0",
+    "pyyaml>=6.0",
+    "PyJWT[crypto]>=2.8.0",
+    "openai>=1.40.0",
+    "azure-identity>=1.17.0",
+    "azure-keyvault-secrets>=4.8.0",
+    "azure-storage-blob[aio]>=12.20.0",
+    "azure-monitor-opentelemetry>=1.6.0",
+    "azure-cosmos>=4.7.0",
+    "azure-servicebus>=7.12.0",
+    "redis>=5.0.0",
+    "tiktoken>=0.7.0",
+    "pypdf>=4.3.0",
+    "pillow>=10.0.0",
+    "python-docx>=1.1.0",
+    "python-pptx>=1.0.0",
+    "openpyxl>=3.1.0",
+    "pymongo>=4.13",
+    "networkx>=3.2",
+    "langgraph>=1.0.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.2", "pytest-asyncio>=0.23", "pytest-cov>=5.0", "ruff>=0.4"]
-ocr = ["pdf2image>=1.17", "pytesseract>=0.3"]
-rerank = ["sentence-transformers>=3.0"]
-graph-neo4j = ["neo4j>=5.14"]
-eval = ["ragas", "deepeval"]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.6.0",
+    "mypy>=1.11.0",
+    "pre-commit>=3.8.0",
+]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
 
-[tool.hatch.build.targets.wheel]
-packages = ["app", "rag", "sdk"]
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+# S = flake8-bandit security checks
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S"]
+ignore = [
+    "S104", # binding 0.0.0.0 is intended inside the container
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S324"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-filterwarnings = ["ignore::DeprecationWarning"]
+pythonpath = ["src", "."]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "src/app/rag/vectorstore/mongo_store.py",  # exercised against a live Atlas cluster only
+    "src/app/rag/graph/mongo_store.py",
+]
