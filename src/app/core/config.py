@@ -13,7 +13,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, Field, SecretStr, field_validator
+from pydantic import AfterValidator, AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -60,6 +60,8 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         env_ignore_empty=True,
+        # Fields with a legacy env alias (below) still accept their field name in code.
+        populate_by_name=True,
     )
 
     # --- App -------------------------------------------------------------------------
@@ -147,14 +149,23 @@ class Settings(BaseSettings):
     # (their bearer token is forwarded). Which model answers, and what happens when it fails,
     # is the gateway's configuration. See app/rag/generation/llm_gateway.py.
     api_gateway_url: Url = ""  # e.g. http://localhost:8000; LLM calls go to <this>/api/llm
-    llm_gateway_url: Url = ""  # direct llm-gateway URL; overrides API_GATEWAY_URL + /api/llm
+    # Direct llm-gateway URL, or the API gateway's /api/llm route; overrides
+    # API_GATEWAY_URL + /api/llm. RAG_GATEWAY_BASE_URL is its name in the previous
+    # implementation (same meaning), still read so existing deployments keep working.
+    llm_gateway_url: Url = Field(
+        default="", validation_alias=AliasChoices("LLM_GATEWAY_URL", "RAG_GATEWAY_BASE_URL")
+    )
     # Service key (X-API-Key) for calls made with no caller token: CLI ingestion, scripts,
     # AUTH_MODE=none. Blank = such calls are refused by the gateway.
     llm_gateway_api_key: SecretStr = SecretStr("")
     llm_caller: str = "knowledge-service"  # caller name in the gateway's per-caller stats
     llm_timeout_seconds: float = Field(default=120.0, gt=0)
     # Must match the gateway's embedding model: the Atlas vector index is built with it.
-    embedding_dimensions: int = 1536  # llm-gateway default: text-embedding-3-small
+    # llm-gateway default: text-embedding-3-small. Legacy name: RAG_EMBEDDING_DIMENSIONS.
+    embedding_dimensions: int = Field(
+        default=1536,
+        validation_alias=AliasChoices("EMBEDDING_DIMENSIONS", "RAG_EMBEDDING_DIMENSIONS"),
+    )
     embedding_batch_size: int = 64
     generation_temperature: float = 0.1
     generation_max_tokens: int = 1024
@@ -162,8 +173,15 @@ class Settings(BaseSettings):
     # --- MongoDB Atlas: chunks (vector + keyword search), knowledge graph, manifest --------
     # mongodb+srv://user:pass@cluster/... Vector and keyword search
     # use Atlas Search indexes, created on startup (MONGODB_CREATE_INDEXES_ON_STARTUP).
-    mongodb_url: SecretStr = SecretStr("")
-    mongodb_database: str = Field(default="knowledge", pattern=r"^[A-Za-z0-9_\-]{1,63}$")
+    # Legacy names (previous implementation): RAG_MONGO_URI, RAG_MONGO_DB_NAME.
+    mongodb_url: SecretStr = Field(
+        default=SecretStr(""), validation_alias=AliasChoices("MONGODB_URL", "RAG_MONGO_URI")
+    )
+    mongodb_database: str = Field(
+        default="knowledge",
+        pattern=r"^[A-Za-z0-9_\-]{1,63}$",
+        validation_alias=AliasChoices("MONGODB_DATABASE", "RAG_MONGO_DB_NAME"),
+    )
     mongodb_create_indexes_on_startup: bool = True
     # Default store for reads (and the only one when VECTOR_STORE_PROVIDERS is blank).
     vector_store_provider: VectorProvider = "mongo"

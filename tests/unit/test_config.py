@@ -23,6 +23,26 @@ def test_urls_are_validated_and_normalised(monkeypatch):
         Settings()
 
 
+def test_previous_implementation_env_names_still_work(monkeypatch):
+    # Deployments configured for the previous service keep these names.
+    for name in ("LLM_GATEWAY_URL", "MONGODB_URL", "MONGODB_DATABASE", "EMBEDDING_DIMENSIONS"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RAG_GATEWAY_BASE_URL", "https://gateway.test/api/llm/")
+    monkeypatch.setenv("RAG_MONGO_URI", "mongodb+srv://user:pass@cluster.test/")
+    monkeypatch.setenv("RAG_MONGO_DB_NAME", "legacy_db")
+    monkeypatch.setenv("RAG_EMBEDDING_DIMENSIONS", "768")
+
+    settings = Settings()
+
+    assert settings.llm_gateway_url == "https://gateway.test/api/llm"
+    assert settings.mongodb_url.get_secret_value() == "mongodb+srv://user:pass@cluster.test/"
+    assert settings.mongodb_database == "legacy_db"
+    assert settings.embedding_dimensions == 768
+
+    monkeypatch.setenv("MONGODB_DATABASE", "current_db")
+    assert Settings().mongodb_database == "current_db"  # the current name wins
+
+
 def test_secrets_are_masked_in_repr(monkeypatch):
     monkeypatch.setenv("LLM_GATEWAY_API_KEY", "super-secret")
 
