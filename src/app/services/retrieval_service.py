@@ -142,6 +142,7 @@ def build_filters(
     return RetrievalFilters(
         collection=collection,
         principals=user.principals,
+        account_id=user.account_scope,
         doc_types=frozenset(explicit.doc_types or analysed.doc_types),
         languages=frozenset(explicit.languages or analysed.languages),
         sources=frozenset(explicit.sources),

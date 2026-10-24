@@ -30,7 +30,9 @@ def _everything_returned(response) -> str:
 
 # -- Tenant / permission isolation --------------------------------------------------------
 def test_restricted_content_never_reaches_chat_answers_or_citations(client, gateway):
-    assert _upload(client, "deal.md", SECRET, "ACC-legal", gateway()).status_code == 200
+    # Ingested by the legal account and restricted to it.
+    legal = gateway(account_id="ACC-legal")
+    assert _upload(client, "deal.md", SECRET, "ACC-legal", legal).status_code == 200
     assert (
         _upload(
             client, "faq.md", "Merger questions go to the press office", "", gateway()

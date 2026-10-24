@@ -42,7 +42,9 @@ _MAX_NUM_CANDIDATES = 10_000  # Atlas limit for $vectorSearch numCandidates
 _UPSERT_BATCH = 500
 _TEXT_PATHS = ["title", "section_path", "content"]
 # Fields every read may filter on: indexed as `filter` (vector index) / `token` (search index).
-_FILTER_FIELDS = ("collection", "kind", "acl", "doc_type", "language", "source", "tags", "doc_id")
+_FILTER_FIELDS = (
+    "collection", "kind", "acl", "account_id", "doc_type", "language", "source", "tags", "doc_id",
+)  # fmt: skip
 _RESULT_FIELDS = (
     "content", "source", "metadata", "doc_id", "title", "section_path", "acl",
     "effective_date", "page", "chunk_index", "parent_id", "prev_id", "next_id", "kind",
@@ -85,6 +87,8 @@ def build_filter(filters: RetrievalFilters, kinds: tuple[str, ...] | None = None
     clauses: list[dict[str, Any]] = [{"collection": filters.collection}]
     if filters.principals is not None:
         clauses.append({"acl": {"$in": _principals(filters)}})
+    if filters.account_id is not None:
+        clauses.append({"account_id": filters.account_id})
     if kinds is not None:
         clauses.append({"kind": {"$in": list(kinds)}})
     for field, values in (
@@ -111,6 +115,8 @@ def build_search_filters(
     ]
     if filters.principals is not None:
         clauses.append({"in": {"path": "acl", "value": _principals(filters)}})
+    if filters.account_id is not None:
+        clauses.append({"equals": {"path": "account_id", "value": filters.account_id}})
     if kinds is not None:
         clauses.append({"in": {"path": "kind", "value": list(kinds)}})
     for field, values in (
@@ -163,6 +169,18 @@ def rrf_fuse(rankings: list[list[VectorSearchResult]], top_k: int) -> list[Vecto
     return [first_seen[chunk_id] for chunk_id in ordered]
 
 
+def _index_paths(definition: dict[str, Any]) -> set[str]:
+    """Field paths an Atlas Search / Vector Search index definition covers."""
+    if "fields" in definition:  # vectorSearch
+        return {f.get("path", "") for f in definition.get("fields", [])}
+    return set((definition.get("mappings") or {}).get("fields", {}))
+
+
+def _missing_paths(existing: dict[str, Any], wanted: dict[str, Any]) -> set[str]:
+    current = existing.get("latestDefinition") or existing.get("definition") or {}
+    return _index_paths(wanted) - _index_paths(current)
+
+
 def _to_document(record: VectorRecord) -> dict[str, Any]:
     document = {
         "content": record.content,
@@ -179,6 +197,7 @@ def _to_document(record: VectorRecord) -> dict[str, Any]:
         "chunk_index": record.chunk_index,
         "page": record.page,
         "acl": list(record.acl),
+        "account_id": record.account_id,
         "doc_type": record.doc_type,
         "language": record.language,
         "tags": list(record.tags),
@@ -287,10 +306,19 @@ class MongoVectorStore(VectorStore):
             ]
             for model in wanted:
                 name = model.document["name"]
-                if name in existing:
-                    continue
-                await collection.create_search_index(model)
-                logger.info("mongo_search_index_created", index=name)
+                definition = model.document["definition"]
+                if name not in existing:
+                    await collection.create_search_index(model)
+                    logger.info("mongo_search_index_created", index=name)
+                elif _missing_paths(existing[name], definition):
+                    # A filter field added since the index was built (e.g. account_id):
+                    # $vectorSearch / $search reject filters on paths the index lacks.
+                    await collection.update_search_index(name, definition)
+                    logger.info(
+                        "mongo_search_index_updated",
+                        index=name,
+                        added=sorted(_missing_paths(existing[name], definition)),
+                    )
         except OperationFailure as exc:
             raise VectorStoreError(f"MongoDB index setup failed: {exc}") from exc
         logger.info("mongo_vector_store_ready", collection=self._collection_name, dims=self._dim)

@@ -528,6 +528,7 @@ class IngestionPipeline:
             title=meta.title,
             section_path=" > ".join(chunk.section_path),
             acl=meta.acl,
+            account_id=meta.extra.get("account_id", ""),
             doc_type=meta.doc_type,
             language=meta.language,
             tags=meta.tags,
@@ -637,6 +638,7 @@ class IngestionPipeline:
                 content=chunk.text,
                 chunk_index=chunk.index,
                 acl=meta.acl,
+                account_id=meta.extra.get("account_id", ""),
                 doc_id=meta.doc_id,
                 title=meta.title,
                 section_path=chunk.section_path,  # lexical layer (G-20)

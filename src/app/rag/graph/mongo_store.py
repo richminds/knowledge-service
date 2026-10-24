@@ -64,11 +64,15 @@ def _entity(doc: dict[str, Any]) -> Entity:
     )
 
 
-def _acl_clause(principals: frozenset[str] | None) -> dict[str, Any]:
-    """ACL restriction for chunks / relations / claims (empty when ACLs are not enforced)."""
-    if principals is None:
-        return {}
-    return {"acl": {"$in": sorted(principals) or [_NO_PRINCIPAL]}}
+def _acl_clause(filters: RetrievalFilters) -> dict[str, Any]:
+    """ACL and account restriction for chunks / relations / claims (empty when neither is
+    enforced)."""
+    clause: dict[str, Any] = {}
+    if filters.principals is not None:
+        clause["acl"] = {"$in": sorted(filters.principals) or [_NO_PRINCIPAL]}
+    if filters.account_id is not None:
+        clause["account_id"] = filters.account_id
+    return clause
 
 
 class MongoGraphStore(GraphStore):
@@ -116,12 +120,12 @@ class MongoGraphStore(GraphStore):
         return self._col("claims")
 
     async def _visible_keys(
-        self, collection: str, keys: list[str], principals: frozenset[str] | None
+        self, collection: str, keys: list[str], filters: RetrievalFilters
     ) -> set[str]:
         """Entity keys mentioned by at least one chunk the caller may read."""
         if not keys:
             return set()
-        query = {"collection": collection, "entity_keys": {"$in": keys}, **_acl_clause(principals)}
+        query = {"collection": collection, "entity_keys": {"$in": keys}, **_acl_clause(filters)}
         mentioned = await self._chunks.distinct("entity_keys", query)
         return set(keys) & set(mentioned)
 
@@ -219,6 +223,7 @@ class MongoGraphStore(GraphStore):
                         "content": chunk.content,
                         "chunk_index": chunk.chunk_index,
                         "acl": list(chunk.acl),
+                        "account_id": chunk.account_id,
                         "doc_id": chunk.doc_id,
                         "title": chunk.title,
                         "section_key": section_key,
@@ -287,7 +292,8 @@ class MongoGraphStore(GraphStore):
                 {"collection": chunk.collection, "src": src, "dst": dst, "type": relation.type,
                  "chunk_id": chunk.chunk_id},
                 {"$set": {"description": relation.description, "source": chunk.source,
-                          "acl": list(chunk.acl), "weight": float(relation.weight)}},
+                          "acl": list(chunk.acl), "account_id": chunk.account_id,
+                          "weight": float(relation.weight)}},
                 upsert=True,
             )
             for src, dst, relation in pairs
@@ -310,6 +316,7 @@ class MongoGraphStore(GraphStore):
                 "chunk_id": chunk.chunk_id,
                 "source": chunk.source,
                 "acl": list(chunk.acl),
+                "account_id": chunk.account_id,
             }
             for claim in chunk.claims
             if entity_key(claim.subject) in existing
@@ -460,7 +467,7 @@ class MongoGraphStore(GraphStore):
             )
             candidates = [doc async for doc in cursor]
             visible = await self._visible_keys(
-                filters.collection, [d["key"] for d in candidates], filters.principals
+                filters.collection, [d["key"] for d in candidates], filters
             )
             for doc in candidates:
                 if doc["key"] not in visible:
@@ -499,9 +506,7 @@ class MongoGraphStore(GraphStore):
         except OperationFailure as exc:
             logger.warning("entity_similarity_unavailable", error=str(exc))
             return []
-        visible = await self._visible_keys(
-            filters.collection, [d["key"] for d in docs], filters.principals
-        )
+        visible = await self._visible_keys(filters.collection, [d["key"] for d in docs], filters)
         entities = []
         for doc in docs:
             if doc["key"] in visible:
@@ -545,7 +550,7 @@ class MongoGraphStore(GraphStore):
                 "collection": filters.collection,
                 "$or": [{"src": {"$in": keys}}, {"dst": {"$in": keys}}],
                 "weight": {"$gte": float(min_weight)},
-                **_acl_clause(filters.principals),
+                **_acl_clause(filters),
             }
             if relation_types:
                 query["type"] = {"$in": list(relation_types)}
@@ -569,7 +574,7 @@ class MongoGraphStore(GraphStore):
             [
                 {"$match": {"collection": filters.collection,
                             "entity_keys": {"$in": entity_keys},
-                            **_acl_clause(filters.principals)}},
+                            **_acl_clause(filters)}},
                 {"$addFields": {"hits": {"$size": {"$setIntersection": [
                     "$entity_keys", entity_keys]}}}},
                 {"$sort": {"hits": DESCENDING, "_id": ASCENDING}},
@@ -600,7 +605,7 @@ class MongoGraphStore(GraphStore):
         keys = await self._chunks.distinct(
             "entity_keys",
             {"_id": {"$in": chunk_ids}, "collection": filters.collection,
-             **_acl_clause(filters.principals)},
+             **_acl_clause(filters)},
         )  # fmt: skip
         docs = await self._entities_by_key(filters.collection, keys)
         return [_entity(doc) for doc in docs.values()]
@@ -612,7 +617,7 @@ class MongoGraphStore(GraphStore):
             return []
         cursor = self._claims.find(
             {"collection": filters.collection, "entity_key": {"$in": entity_keys},
-             **_acl_clause(filters.principals)},
+             **_acl_clause(filters)},
             limit=int(limit),
         )  # fmt: skip
         rows = [doc async for doc in cursor]

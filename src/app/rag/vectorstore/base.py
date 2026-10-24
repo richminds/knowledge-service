@@ -29,6 +29,7 @@ class VectorRecord:
     title: str = ""
     section_path: str = ""
     acl: list[str] = field(default_factory=lambda: [PUBLIC])
+    account_id: str = ""  # app account it was ingested from ("" = none)
     doc_type: str = ""
     language: str = ""
     tags: list[str] = field(default_factory=list)

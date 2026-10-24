@@ -443,14 +443,16 @@ class GraphRagStrategy(RagStrategy):
                 facts = [
                     GraphFact(s, r, t, d or "", chunk_id=c or "", acl=list(a or []))
                     for s, r, t, d, a, c in rows
-                    if filters.allows(a or [])
+                    if filters.allows(a or []) and filters.account_id is None
                 ]
                 info.update(template=template.name, rows=len(facts))
                 if facts:
                     context = self._facts_context([], facts, [], filters)
                     return [context] if context else []
-            # Free-form queries cannot be ACL-filtered generically: only without ACL enforcement.
-            if filters.principals is not None and not self._options.allow_freeform_cypher:
+            # Free-form queries cannot be ACL- or account-filtered generically: only without
+            # either enforced.
+            restricted = filters.principals is not None or filters.account_id is not None
+            if restricted and not self._options.allow_freeform_cypher:
                 info["freeform"] = "disabled_by_acl"
                 return []
             generated = await self._cypher.generate(query)

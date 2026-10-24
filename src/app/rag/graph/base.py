@@ -63,6 +63,7 @@ class ChunkGraph:
     content: str
     chunk_index: int = 0
     acl: list[str] = field(default_factory=lambda: [PUBLIC])
+    account_id: str = ""  # app account it was ingested from ("" = none)
     doc_id: str = ""
     title: str = ""
     section_path: list[str] = field(default_factory=list)  # lexical layer (G-20)

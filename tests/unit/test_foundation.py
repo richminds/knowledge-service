@@ -381,7 +381,8 @@ async def test_answer_cache_hits_and_is_scoped(ingestion_pipeline, strategies, c
     service = RetrievalService(
         RagStrategyRegistry(strategies, RagMode.SEMANTIC), chat_client, cache=cache
     )
-    alice = UserContext(user_id="alice", account_id="ACC-1")
+    # Both see the same (account-less) documents; only their principals differ.
+    alice = UserContext(user_id="alice")
     bob = UserContext(user_id="bob")
 
     first = await service.chat(ChatRequest(query="annual leave days"), alice)
@@ -445,11 +446,23 @@ def test_mongo_indexes_cover_every_filter_field():
 
     vector = vector_index_definition(1536)["fields"]
     assert vector[0] == {
-        "type": "vector", "path": "embedding", "numDimensions": 1536, "similarity": "cosine",
+        "type": "vector",
+        "path": "embedding",
+        "numDimensions": 1536,
+        "similarity": "cosine",
     }
     filtered = {f["path"] for f in vector if f["type"] == "filter"}
     text = search_index_definition("lucene.english")["mappings"]["fields"]
-    for field in ("collection", "kind", "acl", "doc_type", "source", "tags", "doc_id"):
+    for field in (
+        "collection",
+        "kind",
+        "acl",
+        "account_id",
+        "doc_type",
+        "source",
+        "tags",
+        "doc_id",
+    ):
         assert field in filtered and text[field] == {"type": "token"}
     assert "effective_date" in filtered and text["effective_date"] == {"type": "date"}
     assert text["content"]["analyzer"] == "lucene.english"
@@ -459,8 +472,11 @@ def test_mongo_filter_enforces_acl_and_metadata():
     from app.rag.vectorstore.mongo_store import NO_PRINCIPAL, build_filter, build_search_filters
 
     filters = RetrievalFilters(
-        collection="hr", principals=frozenset({"*", "u1"}), doc_types=frozenset({"policy"}),
-        effective_from="2024-01-01", effective_to="2024-12-31",
+        collection="hr",
+        principals=frozenset({"*", "u1"}),
+        doc_types=frozenset({"policy"}),
+        effective_from="2024-01-01",
+        effective_to="2024-12-31",
     )
     clauses = build_filter(filters, kinds=("chunk",))["$and"]
     assert {"collection": "hr"} in clauses
@@ -477,3 +493,69 @@ def test_mongo_filter_enforces_acl_and_metadata():
     nobody = build_filter(RetrievalFilters(collection="hr", principals=frozenset()))
     assert {"acl": {"$in": [NO_PRINCIPAL]}} in nobody["$and"]
     assert build_filter(RetrievalFilters(collection="hr")) == {"collection": "hr"}
+
+
+def test_mongo_filter_scopes_to_the_account():
+    from app.rag.vectorstore.mongo_store import build_filter, build_search_filters
+
+    scoped = RetrievalFilters(collection="hr", account_id="ACC-1")
+    assert {"account_id": "ACC-1"} in build_filter(scoped)["$and"]
+    assert {"equals": {"path": "account_id", "value": "ACC-1"}} in build_search_filters(scoped)
+    # "" = a caller with no account: only content ingested without one.
+    assert {"account_id": ""} in build_filter(scoped.with_changes(account_id=""))["$and"]
+    # The empty-result fallback relaxes metadata filters, never the account.
+    assert scoped.with_changes(doc_types=frozenset({"faq"})).relaxed().account_id == "ACC-1"
+    # Different accounts never share cached answers.
+    assert scoped.signature() != scoped.with_changes(account_id="ACC-2").signature()
+
+
+async def test_mongo_index_is_updated_when_a_filter_field_is_missing(monkeypatch):
+    from app.rag.vectorstore.mongo_store import (
+        MongoVectorStore,
+        search_index_definition,
+        vector_index_definition,
+    )
+
+    old_vector = vector_index_definition(8)
+    old_vector["fields"] = [f for f in old_vector["fields"] if f["path"] != "account_id"]
+    current_search = search_index_definition("lucene.english")
+
+    class FakeCollection:
+        def __init__(self):
+            self.updated = []
+
+        async def create_index(self, *args, **kwargs):
+            return None
+
+        async def list_search_indexes(self):
+            async def indexes():
+                yield {"name": "vec", "latestDefinition": old_vector}
+                yield {"name": "text", "latestDefinition": current_search}
+
+            return indexes()
+
+        async def update_search_index(self, name, definition):
+            self.updated.append(name)
+
+    class FakeDatabase:
+        def __init__(self):
+            self.collection = FakeCollection()
+
+        async def create_collection(self, name):
+            return None
+
+        def __getitem__(self, name):
+            return self.collection
+
+    store = MongoVectorStore(
+        url="mongodb://test",
+        database="db",
+        vector_index="vec",
+        search_index="text",
+        embedding_dim=8,
+    )
+    database = FakeDatabase()
+    monkeypatch.setattr(MongoVectorStore, "_db", property(lambda self: database))
+    await store.ensure_index()
+    # Only the index that lacks account_id is rebuilt; the up-to-date one is left alone.
+    assert database.collection.updated == ["vec"]

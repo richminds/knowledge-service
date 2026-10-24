@@ -15,17 +15,17 @@ from fastapi import (
 
 from app.api.deps import IngestionServiceDep, SettingsDep
 from app.core.audit import audit
-from app.core.auth import IngestionUser
-from app.rag.ingestion.filetypes import upload_problem
+from app.core.auth import IngestionUser, UserContext
 from app.models.schemas import (
     DeleteCollectionResponse,
     IngestionJobStatusResponse,
-    ManifestEntryModel,
     IngestionRequest,
     IngestionResponse,
     JobStatus,
+    ManifestEntryModel,
     UploadIngestionResponse,
 )
+from app.rag.ingestion.filetypes import upload_problem
 
 router = APIRouter()
 
@@ -34,6 +34,18 @@ COLLECTION_PATTERN = r"^[A-Za-z0-9_\-]{1,64}$"
 
 def _csv(value: str) -> list[str] | None:
     return [v.strip() for v in value.split(",") if v.strip()] or None
+
+
+def _with_account(metadata: dict[str, str], user: UserContext) -> dict[str, str]:
+    """Tag what is ingested with the caller's app account (X-Account-ID from the gateway).
+
+    Server-set: an `account_id` sent in the request metadata is always replaced (or
+    dropped when the caller has no account), so nobody can attribute documents to
+    another account."""
+    tagged = {k: v for k, v in metadata.items() if k != "account_id"}
+    if user.account_id:
+        tagged["account_id"] = user.account_id
+    return tagged
 
 
 @router.post("", response_model=IngestionResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -50,7 +62,7 @@ async def start_ingestion(
         job_id,
         request.source_uri,
         request.collection,
-        request.metadata,
+        _with_account(request.metadata, user),
         request.targets,
         request.acl,
         request.full_sync,
@@ -114,7 +126,7 @@ async def upload_and_ingest(
         filename,
         data,
         collection,
-        parsed_metadata,
+        _with_account(parsed_metadata, user),
         target_list,
         _csv(acl),
         relative_path=relative_path,

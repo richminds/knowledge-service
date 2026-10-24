@@ -5,6 +5,12 @@ principal ids allowed to read it (auth-service user ids, account ids, or "*" for
 everyone in the organisation). A caller's principals are {"*", user id, account id}.
 `RetrievalFilters.principals = None` means access control is not enforced (auth disabled,
 local development only).
+
+Account isolation: every chunk / graph node also carries `account_id`, the app account it
+was ingested from. `RetrievalFilters.account_id` is the caller's account; retrievers only
+return items of that account ("" = the caller has none, so only items ingested without
+one). None = not enforced (AUTH_MODE=none, ACCOUNT_ISOLATION=false). It is ANDed with the
+ACL: an item must be in the caller's account and readable by the caller.
 """
 
 from dataclasses import dataclass, field, replace
@@ -26,6 +32,7 @@ class RetrievalFilters:
 
     collection: str = "default"
     principals: frozenset[str] | None = None
+    account_id: str | None = None  # see the module docstring
     doc_types: frozenset[str] = frozenset()
     languages: frozenset[str] = frozenset()
     sources: frozenset[str] = frozenset()
@@ -37,12 +44,18 @@ class RetrievalFilters:
     def allows(self, acl: Iterable[str]) -> bool:
         return is_allowed(acl, self.principals)
 
+    def allows_account(self, account_id: str) -> bool:
+        return self.account_id is None or (account_id or "") == self.account_id
+
     def with_changes(self, **changes) -> "RetrievalFilters":
         return replace(self, **changes)
 
     def relaxed(self) -> "RetrievalFilters":
-        """Drop the metadata narrowing (keep collection and ACL) — empty-result fallback."""
-        return RetrievalFilters(collection=self.collection, principals=self.principals)
+        """Drop the metadata narrowing (keep collection, ACL and account) — empty-result
+        fallback."""
+        return RetrievalFilters(
+            collection=self.collection, principals=self.principals, account_id=self.account_id
+        )
 
     @property
     def has_metadata_filters(self) -> bool:
@@ -59,9 +72,11 @@ class RetrievalFilters:
     def signature(self) -> str:
         """Stable string for cache keys: two filters with the same signature see the same data."""
         principals = "|".join(sorted(self.principals)) if self.principals is not None else "~"
+        account = self.account_id if self.account_id is not None else "~"
         parts = [
             self.collection,
             principals,
+            account,
             ",".join(sorted(self.doc_types)),
             ",".join(sorted(self.languages)),
             ",".join(sorted(self.sources)),

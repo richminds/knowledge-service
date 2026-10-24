@@ -47,6 +47,7 @@ class UserContext:
     auth_method: str = "none"  # none | gateway
     extra_principals: tuple[str, ...] = field(default_factory=tuple)
     enforce_acl: bool = True
+    enforce_account: bool = True
 
     @property
     def principals(self) -> frozenset[str] | None:
@@ -57,11 +58,19 @@ class UserContext:
         return frozenset({PUBLIC, self.user_id, *account, *self.extra_principals})
 
     @property
+    def account_scope(self) -> str | None:
+        """Account filter for RetrievalFilters: the caller's account ("" = none, so only
+        content ingested without an account); None disables account isolation."""
+        return self.account_id if self.enforce_account else None
+
+    @property
     def rate_limit_key(self) -> str:
         return f"{self.auth_method}:{self.user_id}"
 
 
-ANONYMOUS = UserContext(user_id="anonymous", auth_method="none", enforce_acl=False)
+ANONYMOUS = UserContext(
+    user_id="anonymous", auth_method="none", enforce_acl=False, enforce_account=False
+)
 
 CREDENTIALS_EXCEPTION = HTTPException(
     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -101,6 +110,8 @@ async def get_current_user(
             raise CREDENTIALS_EXCEPTION
     if not settings.acl_enforcement and user.enforce_acl:
         user = replace(user, enforce_acl=False)
+    if not settings.account_isolation and user.enforce_account:
+        user = replace(user, enforce_account=False)
     structlog.contextvars.bind_contextvars(user_id=user.user_id, auth_method=user.auth_method)
     request.state.user = user
     return user

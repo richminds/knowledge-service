@@ -93,6 +93,10 @@ class Settings(BaseSettings):
     # Enforce document ACLs in every retriever (disable only for single-audience corpora).
     # Principals are the caller's user id and account id (plus "*").
     acl_enforcement: bool = True
+    # Retrieval only returns content ingested from the caller's app account (X-Account-ID,
+    # stored as account_id on every chunk), in addition to the ACL. Off = shared across
+    # accounts. Not applied with AUTH_MODE=none.
+    account_isolation: bool = True
     # ACL applied to ingested documents that carry none ("*" = everyone in the org).
     ingestion_default_acl: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     # Requests per minute per user (0 = unlimited). Shared across instances via Redis.

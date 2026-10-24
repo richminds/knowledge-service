@@ -42,6 +42,8 @@ class FakeEmbeddingClient:
 def _matches(r: VectorRecord, filters: RetrievalFilters, kinds: tuple[str, ...] | None) -> bool:
     if r.collection != filters.collection or not filters.allows(r.acl):
         return False
+    if not filters.allows_account(r.account_id):
+        return False
     if kinds is not None and r.kind not in kinds:
         return False
     if filters.doc_types and r.doc_type not in filters.doc_types:
@@ -65,6 +67,7 @@ def _result(r: VectorRecord, score: float) -> VectorSearchResult:
     for key in (
         "embedding",
         "collection",
+        "account_id",
         "content_hash",
         "doc_type",
         "language",
@@ -191,7 +194,9 @@ class FakeGraphStore(GraphStore):
         return [
             c
             for c in self.chunks.values()
-            if c.collection == filters.collection and filters.allows(c.acl)
+            if c.collection == filters.collection
+            and filters.allows(c.acl)
+            and filters.allows_account(c.account_id)
         ]
 
     def _entity(self, entity: Entity, collection: str) -> Entity:
