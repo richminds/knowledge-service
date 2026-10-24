@@ -150,9 +150,7 @@ class MongoGraphStore(GraphStore):
                 except CollectionInvalid:
                     pass
             await self._chunks.create_index([("collection", ASCENDING), ("source", ASCENDING)])
-            await self._chunks.create_index(
-                [("collection", ASCENDING), ("entity_keys", ASCENDING)]
-            )
+            await self._chunks.create_index([("collection", ASCENDING), ("entity_keys", ASCENDING)])
             await self._entities.create_index(
                 [("collection", ASCENDING), ("key", ASCENDING)], unique=True
             )
@@ -180,9 +178,7 @@ class MongoGraphStore(GraphStore):
     async def _ensure_entity_vector_index(self) -> None:
         """Atlas Vector Search index for entity linking (G-25). Skipped when unavailable."""
         try:
-            existing = {
-                index["name"] async for index in await self._entities.list_search_indexes()
-            }
+            existing = {index["name"] async for index in await self._entities.list_search_indexes()}
             if self._entity_vector_index in existing:
                 return
             await self._entities.create_search_index(
@@ -657,8 +653,7 @@ class MongoGraphStore(GraphStore):
         names = {"Entity": "entities", "Chunk": "chunks", "Document": "documents",
                  "Section": "sections", "Claim": "claims"}  # fmt: skip
         counts = {
-            label: await self._col(names[label]).count_documents(scope)
-            for label in _COUNTED_LABELS
+            label: await self._col(names[label]).count_documents(scope) for label in _COUNTED_LABELS
         }
         connected = set(await self._relations.distinct("src", scope)) | set(
             await self._relations.distinct("dst", scope)

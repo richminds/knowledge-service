@@ -2,6 +2,8 @@
 
 Supersedes [0002](0002-azure-ai-search-vector-store.md) and [0003](0003-postgres-age-graph.md).
 
+The Key Vault and Bicep consequences below are superseded by [0008](0008-llm-gateway-and-gateway-identity.md): `MONGODB_URL` is an environment variable, and conversations are stored here too.
+
 **Context.** The service ran on two data stores: Azure AI Search for vector and BM25 search, and PostgreSQL with Apache AGE and pgvector for the graph, entity embeddings and the ingestion manifest. Each had its own provisioning, identity setup and operations, including a server restart for AGE preloading. One MongoDB Atlas cluster is already in use for makemerich-backend.
 
 **Decision.**

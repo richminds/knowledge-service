@@ -29,18 +29,20 @@ def _everything_returned(response) -> str:
 
 
 # -- Tenant / permission isolation --------------------------------------------------------
-def test_restricted_content_never_reaches_chat_answers_or_citations(client, entra):
-    assert _upload(client, "deal.md", SECRET, "grp-legal", entra()).status_code == 200
+def test_restricted_content_never_reaches_chat_answers_or_citations(client, gateway):
+    assert _upload(client, "deal.md", SECRET, "ACC-legal", gateway()).status_code == 200
     assert (
         _upload(
-            client, "faq.md", "Merger questions go to the press office", "", entra()
+            client, "faq.md", "Merger questions go to the press office", "", gateway()
         ).status_code
         == 200
     )
 
-    outsider = client.post("/api/v1/chat", json={"query": "merger codename"}, headers=entra())
+    outsider = client.post(
+        "/api/v1/chat", json={"query": "merger codename"}, headers=gateway(account_id="ACC-sales")
+    )
     insider = client.post(
-        "/api/v1/chat", json={"query": "merger codename"}, headers=entra(groups=["grp-legal"])
+        "/api/v1/chat", json={"query": "merger codename"}, headers=gateway(account_id="ACC-legal")
     )
 
     assert outsider.status_code == insider.status_code == 200
@@ -49,10 +51,10 @@ def test_restricted_content_never_reaches_chat_answers_or_citations(client, entr
     assert "upload://deal.md" in {c["source"] for c in insider.json()["citations"]}
 
 
-def test_restricted_content_never_reaches_the_stream(client, entra):
-    _upload(client, "deal.md", SECRET, "grp-legal", entra())
+def test_restricted_content_never_reaches_the_stream(client, gateway):
+    _upload(client, "deal.md", SECRET, "ACC-legal", gateway())
     with client.stream(
-        "POST", "/api/v1/chat/stream", json={"query": "merger codename"}, headers=entra()
+        "POST", "/api/v1/chat/stream", json={"query": "merger codename"}, headers=gateway()
     ) as response:
         body = "".join(response.iter_text())
     assert response.status_code == 200
@@ -68,24 +70,26 @@ def test_collections_are_isolated(client):
     assert {r["source"] for r in only_b.json()["results"]} == {"upload://b.md"}
 
 
-def test_conversations_are_private_to_their_owner(client, entra):
+def test_conversations_are_private_to_their_owner(client, gateway):
     from app.api import deps
 
     store = client.app.dependency_overrides[deps.get_conversation_store]()
-    _upload(client, "leave.md", "Annual leave is 25 days", "", entra())
-    first = client.post("/api/v1/chat", json={"query": "annual leave"}, headers=entra(oid="alice"))
+    _upload(client, "leave.md", "Annual leave is 25 days", "", gateway())
+    first = client.post(
+        "/api/v1/chat", json={"query": "annual leave"}, headers=gateway(user_id="alice")
+    )
     conversation_id = first.json()["conversation_id"]
 
     # Bob replays Alice's conversation id: he must not inherit her history.
     client.post(
         "/api/v1/chat",
         json={"query": "and sick leave?", "conversation_id": conversation_id},
-        headers=entra(oid="bob"),
+        headers=gateway(user_id="bob"),
     )
 
     owners = {user for user, cid in store._data if cid == conversation_id}
     assert owners == {"alice", "bob"}  # two separate histories, never shared
-    assert client.delete("/api/v1/conversations/me", headers=entra(oid="bob")).json() == {
+    assert client.delete("/api/v1/conversations/me", headers=gateway(user_id="bob")).json() == {
         "deleted_conversations": 1
     }
     assert any(user == "alice" for user, _ in store._data)  # Alice's history untouched
@@ -116,12 +120,12 @@ def test_poisoned_document_is_quarantined_not_indexed(client):
     assert "upload://poison.md" not in {r["source"] for r in results.json()["results"]}
 
 
-def test_acl_cannot_be_widened_through_request_filters(client, entra):
-    _upload(client, "deal.md", SECRET, "grp-legal", entra())
+def test_acl_cannot_be_widened_through_request_filters(client, gateway):
+    _upload(client, "deal.md", SECRET, "ACC-legal", gateway())
     response = client.post(
         "/api/v1/retrieval",
         json={"query": "merger", "filters": {"sources": ["upload://deal.md"], "tags": ["*"]}},
-        headers=entra(),
+        headers=gateway(),
     )
     assert response.status_code in (200, 422)
     if response.status_code == 200:

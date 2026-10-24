@@ -253,9 +253,7 @@ class EvalRunner:
             for store in vector_stores or [None]:
                 label = str(mode) if mode is not None else "default"
                 label += f"@{store}" if store else ""
-                results[label] = [
-                    await self.run_case(case, mode, judge, store) for case in cases
-                ]
+                results[label] = [await self.run_case(case, mode, judge, store) for case in cases]
         return {
             "summary": {label: summarise(rows) for label, rows in results.items()},
             "by_type": {label: summarise_by_type(rows) for label, rows in results.items()},

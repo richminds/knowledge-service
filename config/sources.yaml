@@ -1,5 +1,5 @@
 # Named data sources for the db:// and api:// connectors (C-061, C-062) — placeholders.
-# Secrets: ${ENV_VAR} (App Service setting) or ${kv:secret-name} (Azure Key Vault).
+# Secrets: ${ENV_VAR} (environment variable).
 # Ingest with: POST /api/v1/ingestion {"source_uri": "db://hr_faq"} or "api://servicenow_kb".
 
 databases:

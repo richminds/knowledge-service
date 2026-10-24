@@ -1,6 +1,6 @@
-# OISSA Knowledge Agent: RAG on Azure
+# OISSA Knowledge Agent
 
-A question-answering service over internal documents. It is built with FastAPI on Azure OpenAI and MongoDB Atlas (vector search, keyword search and the knowledge graph).
+A question-answering service over internal documents. It is built with FastAPI and MongoDB Atlas (vector search, keyword search, the knowledge graph and conversations). Every LLM and embedding call goes through the LLM gateway, and identity comes from the API gateway, the same way as makemerich-backend.
 
 It offers five retrieval strategies, which can be switched with a flag and validated side by side, plus a router that picks between them:
 
@@ -31,7 +31,7 @@ Every answer has numbered citations, a confidence label (high / medium / low) wi
 - [Security](#security)
 - [Observability](#observability)
 - [Testing and evaluation](#testing-and-evaluation)
-- [Deployment (Azure Pipelines)](#deployment-azure-pipelines)
+- [Deployment](#deployment)
 - [Repository layout](#repository-layout)
 - [Documentation](#documentation)
 - [Known gaps](#known-gaps)
@@ -41,29 +41,24 @@ Every answer has numbered citations, a confidence label (high / medium / low) wi
 ## Architecture
 
 ```text
-        Sources (Blob, SharePoint, Confluence, DB, REST, web, uploads)
-                                  │
-              Event Grid ─► Service Bus ─► ingestion worker (Container Apps job)
+        Sources (local files, uploads, Confluence, DB, REST, web)
                                   │
    detect type ─► parse ─► clean & govern ─► metadata ─► chunk ─► enrich ─► embed
                                   │                                    │
                   MongoDB (graph collections)         MongoDB Atlas Search (vectors + BM25)
                                   │                                    │
- User ─► /ui or API ─► auth ─► rate limit ─► question analysis ─► router (semantic | hybrid | hybrid_graph | graph | agentic)
-                                  ─► fuse / rerank / context budget ─► Azure OpenAI
-                                  ─► citations + confidence ─► streamed answer (SSE)
+ User ─► API gateway (auth-service sign-in, injects X-User-*) ─► rate limit ─► question analysis
+        ─► router (semantic | hybrid | hybrid_graph | graph | agentic)
+        ─► fuse / rerank / context budget ─► LLM gateway (via the API gateway, as the user)
+        ─► citations + confidence ─► streamed answer (SSE)
 ```
 
-| Concern | Azure service |
+| Concern | Service |
 |---|---|
-| API and chat UI | App Service (Linux container); prod has a staging slot for blue-green releases |
-| Background work | Container Apps jobs: event-driven ingestion, nightly reconcile, nightly graph maintenance |
-| Models | Azure OpenAI (chat, utility, embedding; optional vision and Whisper) |
-| Search, graph and ingestion manifest | MongoDB Atlas (Vector Search + Atlas Search; not provisioned by the Bicep, connection string in Key Vault as `mongodb-url`) |
-| Documents and data-lake zones | Storage account (`documents`, `rag-zones`) |
-| Secrets | Key Vault. Everything else uses one managed identity, with no keys. |
-| Optional | Content Safety, Document Intelligence, Language (PII), Redis, Cosmos DB |
-| Monitoring | Log Analytics, Application Insights, alerts, budget, workbook |
+| Identity | API gateway: authenticates against auth-service, strips caller-sent identity headers, injects `X-User-ID`, `X-User-Email`, `X-User-Name`, `X-Account-ID`, `X-Is-Admin` |
+| Models (chat and embeddings) | LLM gateway, reached at `API_GATEWAY_URL` + `/api/llm` with the caller's bearer token. It picks the model, retries and fails over; this service holds no provider key. |
+| Search, graph, manifest, conversations | MongoDB Atlas (Vector Search + Atlas Search), `MONGODB_URL` |
+| Optional | Redis (shared rate limits and caches), a Cohere-compatible reranker |
 
 More detail is in [docs/architecture.md](docs/architecture.md) and the decision records in [docs/adr/](docs/adr/).
 
@@ -73,8 +68,7 @@ More detail is in [docs/architecture.md](docs/architecture.md) and the decision 
 
 **Prerequisites:**
 - Python 3.11+ (3.12 recommended).
-- Azure CLI, signed in with `az login`.
-- Access to an Azure OpenAI resource.
+- A running LLM gateway (llm-gateway), either behind the API gateway or directly, and a key for it if you call it without a signed-in user.
 - A MongoDB Atlas cluster (the free M0 tier works) whose network access list allows your IP. Networks that decrypt TLS can block Atlas authentication.
 
 ```bash
@@ -83,26 +77,27 @@ python -m venv .venv
 .venv\Scripts\activate                    # macOS/Linux: source .venv/bin/activate
 make install                              # pip install -r requirements-dev.txt + pre-commit
 
-# 2. Configure: copy the template, then set the OpenAI endpoint and the Atlas connection string
+# 2. Configure: copy the template, then set the gateway and the Atlas connection string
 copy .env.example .env                    # macOS/Linux: cp .env.example .env
-#    AZURE_OPENAI_ENDPOINT=https://<openai>.openai.azure.com
+#    API_GATEWAY_URL=http://localhost:<api-gateway-port>   (or LLM_GATEWAY_URL=http://localhost:8080)
+#    LLM_GATEWAY_API_KEY=sk-...            (needed while AUTH_MODE=none: no user token to forward)
 #    MONGODB_URL=mongodb+srv://<user>:<password>@<cluster>.mongodb.net/
 
 # 3. Start the API (collections and Atlas Search indexes are created on startup)
-make dev                                  # http://localhost:8000
+make dev                                  # http://localhost:8090 (api-gateway routes /api/knowledge here)
 
 # 4. Load the sample documents and ask a question
 make ingest
 ```
 
-Then open **http://localhost:8000/ui** for the chat page, or **http://localhost:8000/docs** for the interactive API:
+Then open **http://localhost:8090/ui** for the chat page, or **http://localhost:8090/docs** for the interactive API:
 
 ```bash
-curl -X POST localhost:8000/api/v1/chat -H "Content-Type: application/json" \
+curl -X POST localhost:8090/api/v1/chat -H "Content-Type: application/json" \
   -d '{"query": "Which file formats are supported?"}'
 ```
 
-Leave the API keys empty: locally, `az login` is used for Entra ID (keyless) authentication. Locally, `AUTH_MODE=none`, so no sign-in is needed and ACLs are not enforced.
+Locally, `AUTH_MODE=none`, so no sign-in is needed and ACLs are not enforced. With no signed-in user there is no token to forward, so LLM calls use `LLM_GATEWAY_API_KEY` instead. Set `EMBEDDING_DIMENSIONS` to the size of the gateway's embedding model before the first ingest: the vector index is created with it.
 
 ---
 
@@ -110,18 +105,12 @@ Leave the API keys empty: locally, `az login` is used for Entra ID (keyless) aut
 
 Every setting is an environment variable. [.env.example](.env.example) lists all of them, with comments and `TODO` placeholders.
 
-| What | Local | QA / Prod |
-|---|---|---|
-| Service URLs and flags (`RAG_MODE`, endpoints, tuning) | `.env` | `infra/<env>.bicepparam` → App Service settings (most are derived from the resources Bicep creates) |
-| Secrets (`API_KEY`, connector credentials, optional keys) | `.env`, or blank plus `AZURE_KEY_VAULT_URL` | The environment's Key Vault |
-| Source lists, ACL mapping, glossary, ontology, Cypher templates | `config/*.yaml` | Same files, baked into the image |
+| What | Where |
+|---|---|
+| Service URLs, flags, tuning and secrets (`MONGODB_URL`, `LLM_GATEWAY_API_KEY`, connector credentials) | Environment variables, or `.env` locally |
+| Source lists, ACL mapping, glossary, ontology, Cypher templates | `config/*.yaml`, baked into the image |
 
-- **Precedence** (highest first): environment variables → Key Vault → `.env` → defaults. A blank value never overrides anything.
-- **Key Vault names:** the setting name in lower case, with dashes instead of underscores. For example, `API_KEY` → `api-key`, and `CONFLUENCE_API_TOKEN` → `confluence-api-token`.
-
-  ```bash
-  az keyvault secret set --vault-name <kv-name> --name api-key --value <secret>
-  ```
+- **Precedence** (highest first): environment variables → `.env` → defaults. A blank value never overrides anything.
 - **Validation:** missing or invalid settings for the enabled features are logged at startup and reported by `GET /api/v1/health/ready`. The app does not crash-loop.
 
 `.env` is git-ignored. Never commit secrets.
@@ -139,7 +128,7 @@ The flags you're most likely to change:
 | `RAG_MODE` / `RAG_ENABLED_MODES` | `semantic` / `semantic` | Default retrieval strategy, and which strategies are available |
 | `QUERY_ANALYSIS_ENABLED` | `true` | LLM question analysis: follow-up rewrite, intent, filters |
 | `ASSISTANT_SCOPE` | blank | What counts as in scope. Blank or too narrow, and valid questions get the "outside what I can help with" reply. |
-| `RETRIEVAL_MODE` | `hybrid` | `vector`, `hybrid` (vector + BM25) or `semantic_hybrid` (+ Azure semantic ranker) |
+| `RETRIEVAL_MODE` | `hybrid` | `vector`, `hybrid` (vector + BM25) or `semantic_hybrid` (+ semantic reranker) |
 | `SEMANTIC_QUERY_TRANSFORM` | `none` | `multi_query`, `hyde` or `step_back` query rewriting |
 | `RERANKER` | `none` | `llm` or `cohere` reranking |
 | `RETRIEVAL_KNEE_CUTOFF` | `false` | Drops passages after the sharp drop in scores |
@@ -147,7 +136,6 @@ The flags you're most likely to change:
 | `ANSWER_CACHE_ENABLED` | `false` | Reuses answers to similar questions. Keep it off while testing. |
 | `RAG_ESCALATION_ENABLED` | `false` | Retries low-confidence answers in a stronger mode |
 | `INGESTION_TARGETS` | `vector` | Adds the knowledge graph with `graph` |
-| `AZURE_OPENAI_VISION_DEPLOYMENT` | blank | Describes image files, and pictures and scanned pages inside PDFs, so diagrams become searchable. Blank: those images are ignored. |
 | `CHUNK_PARENT_SIZE`, `ENRICH_*` | off | Parent-child chunking and LLM enrichment at ingestion (re-ingest with `--force` after changing) |
 
 Restart the API after changing any flag.
@@ -200,17 +188,17 @@ The graph lives in the same database, in `<MONGODB_GRAPH_PREFIX>_*` collections:
 | POST | `/api/v1/retrieval` | Retrieved passages only, without an answer |
 | POST | `/api/v1/feedback` | 👍 / 👎 and a comment on an answer, by `response_id` |
 | DELETE | `/api/v1/conversations/me` | Delete the caller's chat history |
-| POST | `/api/v1/ingestion` | Ingestion job for a source URI: a local path, `blob://`, `sharepoint://`, `confluence://`, `db://`, `api://` or `https://` |
+| POST | `/api/v1/ingestion` | Ingestion job for a source URI: a local path, `confluence://`, `db://`, `api://` or `https://` |
 | POST | `/api/v1/ingestion/upload` | Ingest one uploaded file (with optional `acl` and `collection`) |
 | GET | `/api/v1/ingestion/{job_id}` | Job status |
 | GET | `/api/v1/ingestion/manifest` | Status of each document: indexed, skipped, quarantined or failed |
 | DELETE | `/api/v1/ingestion/sources?source=` | Remove a document from every store |
 | DELETE | `/api/v1/ingestion/collections/{name}` | Remove a whole collection |
 | GET | `/ui` | Built-in chat page (`UI_ENABLED`) |
-| GET | `/api/v1/admin/rag/config` | Admin: enabled modes, selectable answer models, every model in play, retrieval settings, eval thresholds and golden set |
-| POST | `/api/v1/admin/rag/evaluate` | Admin: one scored run for a mode and answer model (uncached): answer, top-k citations, trace, judge scores and retrieval metrics (hit, recall, MRR, nDCG, citation precision/recall, correctness) |
+| GET | `/api/v1/admin/rag/config` | Admin: enabled modes, models in play (all `llm-gateway`), retrieval settings, eval thresholds and golden set |
+| POST | `/api/v1/admin/rag/evaluate` | Admin: one scored run for a mode (uncached): answer, top-k citations, trace, judge scores and retrieval metrics (hit, recall, MRR, nDCG, citation precision/recall, correctness) |
 
-Everything except the health endpoints and `/ui` requires authentication when `AUTH_MODE` is not `none`. Send `Authorization: Bearer <Entra token>` or `X-API-Key`. The `/admin` endpoints also require the `ADMIN_REQUIRED_ROLE` app role (default `SA_Admin`) for Entra users; they back the RAG Studio page in oissaagent-ui.
+With `AUTH_MODE=gateway`, everything except the health endpoints and `/ui` requires the `X-User-ID` header the API gateway injects, so call the service through the gateway with an auth-service token. The `/admin` endpoints also require `X-Is-Admin: true` (`ADMIN_REQUIRES_ADMIN`, on by default); they back the RAG Studio page.
 
 ---
 
@@ -243,13 +231,13 @@ Each `/chat` response (and the `quality` event of the stream) includes:
 
 | Control | Implementation |
 |---|---|
-| Sign-in | `AUTH_MODE`: `entra` (validated Entra ID tokens), `api_key`, or `entra+api_key`. `none` is for local use only. |
-| Document permissions | Every chunk and graph entity carries an ACL. The user's ID and group IDs filter **every** store query. The LLM never decides access. |
-| Ingestion rights | `INGESTION_REQUIRED_ROLE` (an Entra app role) |
-| Prompt injection | Checked on questions, quarantined at ingestion, and flagged in retrieved passages. Azure Content Safety is used when enabled. |
+| Sign-in | `AUTH_MODE=gateway`: identity headers injected by the API gateway, which validates the auth-service token and strips any identity headers the caller sent. Restrict this service to the gateway at the network level: a direct request could set the headers itself. `none` is for local use only. |
+| Document permissions | Every chunk and graph entity carries an ACL. The user's ID and account ID filter **every** store query. The LLM never decides access. |
+| Ingestion rights | `INGESTION_REQUIRES_ADMIN` (admins only, from `X-Is-Admin`) |
+| Prompt injection | Checked on questions, quarantined at ingestion, and flagged in retrieved passages (pattern checks). |
 | Abuse | Per-user rate limits (`RATE_LIMIT_PER_MINUTE`) and input validation |
 | Privacy | PII masked in logs, with optional PII masking in documents. Deletion endpoints exist for users and sources. Every query and ingest is audited. |
-| Infrastructure | Managed identity only. Local auth is disabled where possible, and TLS 1.2+ is required. |
+| LLM spend | Calls go out as the user, so the gateway's per-user rate limits, budgets and metering apply |
 
 `tests/integration/test_security.py` and `test_isolation_redteam.py` prove these controls. The manual checklist is [docs/runbooks/red-team.md](docs/runbooks/red-team.md).
 
@@ -258,30 +246,23 @@ Each `/chat` response (and the `quality` event of the stream) includes:
 ## Observability
 
 - **Logs:**
-  - JSON to stdout and App Insights `traces`.
+  - JSON to stdout.
   - One `rag_answer` event per answer, with mode, confidence, latency and tokens.
   - The question text is logged only if `LOG_QUESTION_TEXT=true`.
-- **Traces:** an OpenTelemetry span for every RAG step (`rag.vector_search`, `rag.graph_traversal`, `rag.grade`, …), plus the dependency calls.
-- **Metrics:** `rag.request.duration`, `rag.answers`, `rag.quality.score`, `rag.llm.tokens`, `rag.feedback` and the ingestion counters, split by RAG mode.
+- **Traces and metrics:** OpenTelemetry API calls for every RAG step (`rag.vector_search`, `rag.graph_traversal`, `rag.grade`, …) and `rag.request.duration`, `rag.answers`, `rag.quality.score`, `rag.llm.tokens`, `rag.feedback` plus the ingestion counters. No exporter is configured, so they are no-ops until you add one.
+- **LLM usage:** per-caller stats live in the LLM gateway; calls are labelled `LLM_CALLER:<purpose>` (`knowledge-service:answer`, `knowledge-service:query_analysis`, ...).
 - **Correlation:** the `X-Request-ID` header equals `response_id`.
-- **Dashboards and alerts:** Bicep deploys:
-  - a workbook with traffic, quality, latency and cost per mode, and unanswered questions;
-  - alerts for errors, latency, quality drops and token spikes;
-  - a budget.
-
-  Ready-made queries are in [infra/monitoring/rag-queries.kql](infra/monitoring/rag-queries.kql).
 
 ---
 
 ## Testing and evaluation
 
 ```bash
-make test                     # unit + integration tests (in-memory fakes; never call Azure)
+make test                     # unit + integration tests (in-memory fakes; never call the gateway)
 make lint                     # ruff lint + format check
 make typecheck                # mypy
-make bicep-check              # compile-check infra/ (or: az bicep build --file infra/main.bicep)
 make eval                     # golden-set retrieval metrics for every enabled mode
-python scripts/run_eval.py --rag-mode all --judge --gate     # what the CI quality gate runs
+python scripts/run_eval.py --rag-mode all --judge --gate     # quality gate against thresholds.yaml
 python scripts/run_ablation.py                               # compare configuration variants
 locust -f tests/load/locustfile.py --host https://<qa-app>   # load test (QA only)
 ```
@@ -299,22 +280,9 @@ To measure the effect of a flag change, see [docs/feature-flags.md, section 6](d
 
 ---
 
-## Deployment (Azure Pipelines)
+## Deployment
 
-```text
-push to develop/main
-  └─ Build ─────────── lint · tests · Bicep compile · Docker build (+ push to ACR)
-       └─ DeployQA ──── Bicep → container → smoke test
-            └─ QualityGate ── golden set against QA; fails on regressions
-                 └─ DeployProd (main only, manual approval)
-                      Bicep → staging slot → smoke test → swap into production
-```
-
-- The same image (tagged with the build ID) is promoted from QA to Prod. It is never rebuilt.
-- Per-environment values are in [infra/qa.bicepparam](infra/qa.bicepparam) and [infra/prod.bicepparam](infra/prod.bicepparam). The optional services are turned on with the `enable*` parameters.
-- To roll back, swap the slots back. See [docs/runbooks/rollback.md](docs/runbooks/rollback.md).
-
-The one-time Azure DevOps setup and the first deployment are described step by step in [docs/workflow-execution.md](docs/workflow-execution.md#5-first-deployment-to-azure).
+The service is one container (see the [Dockerfile](Dockerfile)); run it anywhere that can reach MongoDB Atlas and the API gateway, and put it behind the API gateway (its route registry expects knowledge-service under `/api/knowledge`). Configure it with environment variables as in [.env.example](.env.example), with at least `AUTH_MODE=gateway`, `API_GATEWAY_URL` and `MONGODB_URL`. To roll back, redeploy the previous image; see [docs/runbooks/rollback.md](docs/runbooks/rollback.md).
 
 ---
 
@@ -323,7 +291,7 @@ The one-time Azure DevOps setup and the first deployment are described step by s
 ```text
 src/app/
   main.py               app factory, lifespan, /ui
-  core/                 config, Key Vault source, auth, rate limit, audit, PII, telemetry, metrics
+  core/                 config, gateway identity (auth), caller token, rate limit, audit, PII, metrics
   api/                  dependency wiring (deps.py) and v1 endpoints
   rag/
     strategies/         semantic (+ hybrid), hybrid_graph, graph, agentic, registry/router
@@ -334,17 +302,15 @@ src/app/
     vectorstore/        MongoDB Atlas vector + keyword search
     graph/              MongoDB graph store, extraction, ontology, communities
     ingestion/          connectors, parsing, governance, chunking, enrichment, manifest, pipeline
-    generation/         prompts and Azure OpenAI client
+    generation/         prompts and the LLM gateway client (vendored SDK)
     evaluation/         answer quality and the offline harness
   services/             chat/retrieval, ingestion, conversations
   prompts/              versioned prompt templates (YAML)
   static/chat.html      chat UI
 config/                 YAML placeholders (sources, ACLs, glossary, ontology, ...)
-scripts/                ingest, worker, reconcile, graph maintenance, eval, tooling
+scripts/                ingest, reconcile, graph maintenance, eval, tooling
 evals/                  golden set, thresholds, ablations, gold sets
 tests/                  unit/, integration/, load/
-infra/                  main.bicep, modules/, *.bicepparam, monitoring/
-pipelines/              azure-pipelines.yml, templates/, variables/
 docs/                   architecture, ADRs, workflow, runbooks, user guide
 ```
 
@@ -368,9 +334,9 @@ docs/                   architecture, ADRs, workflow, runbooks, user guide
 
 ## Known gaps
 
-- **Private networking and WAF:** private endpoints, VNet integration, and Front Door or API Management in front of the app.
-- **LLM gateway:** an API Management AI gateway for shared quotas and token logging.
+- **Network restriction:** nothing in-process stops a direct caller from sending `X-User-ID`; only allow traffic from the API gateway.
+- **Images and audio/video:** not ingested. The LLM gateway takes text-only messages, so there is no OCR, vision or speech model; scanned PDF pages are flagged `pages_without_text`.
+- **Per-request model choice:** the gateway picks the model, so the admin studio can no longer compare answer models.
 - **MongoDB least privilege:** use an Atlas database user scoped to `MONGODB_DATABASE` (readWrite + search index management), not an admin user.
 - **Agents:** a SQL tool, sandboxed code execution and MCP exposure for agent tools.
-- **Diagrams drawn in PDFs:** pictures inside PDFs are described by the vision model, but diagrams drawn with lines, text and small logos (typical of Visio and PowerPoint exports) are not. Only their text labels are indexed. The fix is to render such pages as images (for example with `pypdfium2`) and describe the whole page. Details: [docs/workflow-execution.md, 2.2.1](docs/workflow-execution.md#221-images-and-diagrams).
 - **Placeholders to fill:** search the repository for `TODO`. The full list is in [docs/workflow-execution.md](docs/workflow-execution.md#4-fill-in-the-placeholders).

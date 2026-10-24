@@ -16,7 +16,7 @@ No prior knowledge of evaluation is needed. If you only have five minutes, read 
 8. [Answer-quality metrics (LLM judge)](#8-answer-quality-metrics-llm-judge)
 9. [Other metrics: cost, speed, routing, agent](#9-other-metrics-cost-speed-routing-agent)
 10. [From per-question scores to one report](#10-from-per-question-scores-to-one-report)
-11. [The quality gate (CI)](#11-the-quality-gate-ci)
+11. [The quality gate](#11-the-quality-gate)
 12. [How to run it](#12-how-to-run-it)
 13. [Freshness: how newer content is favoured](#13-freshness-how-newer-content-is-favoured)
 14. [Things to watch out for](#14-things-to-watch-out-for)
@@ -407,9 +407,9 @@ graph               0.700        0.650        0.400        0.600  ...
 
 ---
 
-## 11. The quality gate (CI)
+## 11. The quality gate
 
-With `--gate`, the run **fails** (exit code 1) if quality drops. The Azure pipeline uses this ([eval-gate.yml](../pipelines/templates/eval-gate.yml)). There are two checks.
+With `--gate`, the run **fails** (exit code 1) if quality drops. Run it against QA before promoting a release ([workflow-execution.md, section 6](../docs/workflow-execution.md#6-everyday-change-commit-to-production)). There are two checks.
 
 ### 11.1 Thresholds (absolute limits)
 
@@ -434,7 +434,7 @@ agentic:
 
 - A plain name is a **minimum**: `recall: 0.6` fails if average recall is below 0.6.
 - A name ending in `_max` is a **maximum**: `latency_ms_max: 15000` fails if average latency is above 15 seconds.
-- Mode sections override `all`. A run on a named store (`semantic@pgvector`) uses the `semantic` rules.
+- Mode sections override `all`. A run on a named store (`semantic@mongo`) uses the `semantic` rules.
 - A metric missing from the report is skipped (for example `faithfulness` without `--judge`).
 
 ### 11.2 Baseline (no regressions)
@@ -476,7 +476,7 @@ python scripts/run_eval.py --rag-mode hybrid --judge
 # Test the router
 python scripts/run_eval.py --rag-mode auto
 
-# CI gate: thresholds + baseline
+# Quality gate: thresholds + baseline
 python scripts/run_eval.py --rag-mode all --gate
 
 # Record the current results as the new baseline
@@ -487,7 +487,7 @@ python scripts/run_eval.py --rag-mode all --save-baseline
 |---|---|---|
 | `--golden` | `evals/golden_set.jsonl` | The golden set file |
 | `--rag-mode` | `RAG_MODE` | A mode, or `all` for every enabled mode |
-| `--vector-store` | `VECTOR_STORE_PROVIDER` | `azure_search`, `pgvector`, or `all` |
+| `--vector-store` | `VECTOR_STORE_PROVIDER` | `mongo`, or `all` |
 | `--top-k` | `5` | k for the retrieval metrics |
 | `--judge` | off | Turn on the LLM judge and correctness |
 | `--gate` | off | Fail on threshold violations or regressions |
@@ -639,7 +639,7 @@ Run it with `SEMANTIC_RECENCY_BOOST=0` and then `0.3` (or as two variants in [ab
 | Unit tests for the metrics | [tests/unit/test_evaluation.py](../tests/unit/test_evaluation.py) |
 | Recency boost (freshness) | [strategies/semantic.py](../src/app/rag/strategies/semantic.py) (`recency_factor`) |
 | Where `effective_date` comes from | [ingestion/metadata.py](../src/app/rag/ingestion/metadata.py) |
-| The CI gate | [pipelines/templates/eval-gate.yml](../pipelines/templates/eval-gate.yml) |
+| The quality gate | [scripts/run_eval.py](../scripts/run_eval.py) (`--gate`) |
 
 ---
 

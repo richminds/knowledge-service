@@ -10,8 +10,8 @@ tool - not the agent - enforces permissions (A-17). All tools are read-only (A-4
   fetch_document       the full parent document of a passage (A-14)
   calculator, date_math  utility tools (A-15)
   web_search           optional external search when the corpus lacks the answer (A-13)
-Not included (TODO): sql_query (A-12) and sandboxed code execution (A-15, A-40: use Azure
-Container Apps dynamic sessions). MCP exposure of these tools (A-18) is a future option.
+Not included (TODO): sql_query (A-12) and sandboxed code execution (A-15, A-40).
+ MCP exposure of these tools (A-18) is a future option.
 """
 
 import ast

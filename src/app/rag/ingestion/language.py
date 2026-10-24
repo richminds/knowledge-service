@@ -1,7 +1,7 @@
 """Lightweight language detection (C-087): script detection + stopword scoring.
 
 Covers the languages most common in the corpus (en, fr, es, pt, de, it, ru, ar, zh).
-For broader coverage set LANGUAGE_DETECTION=azure (Azure AI Language) — TODO hook.
+Broader coverage needs a language-detection service — TODO hook.
 """
 
 import re

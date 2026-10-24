@@ -22,8 +22,8 @@ class JobStatus(StrEnum):
 class IngestionRequest(BaseModel):
     source_uri: str = Field(
         ...,
-        description="Path under INGESTION_LOCAL_ROOT, or blob://<container>/<prefix>",
-        examples=["policies/", "blob://documents/hr/"],
+        description="Path under INGESTION_LOCAL_ROOT, or another configured connector URI",
+        examples=["policies/", "confluence://HR"],
     )
     collection: str = CollectionName
     metadata: dict[str, str] = Field(
@@ -36,7 +36,7 @@ class IngestionRequest(BaseModel):
     acl: list[str] | None = Field(
         default=None,
         max_length=200,
-        description="Principal ids (Entra user/group object ids, or * for everyone) allowed "
+        description="Principal ids (auth-service user/account ids, or * for everyone) allowed "
         "to read these documents. Defaults to the source's own permissions, else "
         "INGESTION_DEFAULT_ACL.",
     )
@@ -326,7 +326,7 @@ class Usage(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     llm_calls: int = 0
-    by_model: dict[str, int] = Field(default_factory=dict, description="Tokens per deployment")
+    by_model: dict[str, int] = Field(default_factory=dict, description="Tokens per model")
     by_purpose: dict[str, int] = Field(
         default_factory=dict, description="Tokens per call type (answer, query_analysis, ...)"
     )
@@ -384,10 +384,10 @@ class AdminRagConfig(BaseModel):
     """What the admin playground can choose from, and the targets it scores against."""
 
     modes: RagModesResponse
-    answer_models: list[str] = Field(description="Deployments selectable for answers")
+    answer_models: list[str] = Field(description="Answer models selectable (only the LLM gateway)")
     default_answer_model: str
     models: dict[str, str] = Field(
-        description="Every model in play: utility, embedding, reranker, judge, vision, ..."
+        description="Every model in play: answer, utility, embedding, reranker, judge"
     )
     retrieval: dict[str, Any]
     quality_judge: str
@@ -401,7 +401,7 @@ class AdminEvalRequest(BaseModel):
     collection: str = CollectionName
     rag_mode: RagMode | None = RagModeField
     vector_store: str | None = VectorStoreField
-    model: str | None = Field(default=None, description="Answer deployment; see /admin/rag/config")
+    model: str | None = Field(default=None, description="Answer model; see /admin/rag/config")
     top_k: int | None = Field(default=None, ge=1, le=50)
     judge: bool = Field(default=True, description="Score with the LLM judge (RAG triad)")
     filters: SearchFilters | None = None
@@ -421,7 +421,7 @@ class AdminEvalRequest(BaseModel):
 
 
 class AdminEvalResponse(BaseModel):
-    model: str = Field(description="Answer deployment used")
+    model: str = Field(description="Answer model used")
     top_k: int
     response: ChatResponse
     metrics: dict[str, float] = Field(

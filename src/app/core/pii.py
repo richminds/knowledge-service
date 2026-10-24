@@ -1,9 +1,7 @@
 """Lightweight PII detection/masking (regex).
 
-Used for log/trace masking (C-196), the output guardrail (C-195) and as the fallback for
-ingestion-time masking (C-094) when no PII service is configured. For production-grade
-detection (names, addresses, many locales) configure Azure AI Language PII
-(PII_SERVICE=azure_language) — see app.rag.ingestion.governance.
+Used for log/trace masking (C-196), the output guardrail (C-195) and ingestion-time
+masking (C-094, PII_MODE=regex) — see app.rag.ingestion.governance.
 """
 
 import re

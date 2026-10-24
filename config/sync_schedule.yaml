@@ -3,11 +3,9 @@
 # no longer exist at the source.
 
 sources:
-  - uri: blob://documents/
+  - uri: policies/
     collection: default
-  # - uri: sharepoint://TODO.sharepoint.com/sites/HR/Shared Documents/Policies
-  #   collection: hr
-  #   targets: [vector, graph]
+    # targets: [vector, graph]
   # - uri: confluence://TODO-SPACE
   #   collection: wiki
   # - uri: db://hr_faq

@@ -18,9 +18,8 @@ class IngestionService:
     """Coordinates ingestion runs, deletions and job status.
 
     Job state is kept in-memory for this template, so it is lost on restart and not
-    shared between App Service instances. For production scale, use the queue-driven
-    worker (scripts/ingestion_worker.py) and the ingestion manifest instead of FastAPI
-    BackgroundTasks.
+    shared between instances. For production scale, run ingestion from the CLI
+    (scripts/ingest_cli.py) with the Mongo ingestion manifest (MANIFEST_STORE=mongo).
     """
 
     def __init__(

@@ -269,7 +269,7 @@ Set in the `.env` file (see [.env.example](../.env.example) for all options).
 | `AGENTIC_ALLOW_CLARIFY` | `false` | Let the agent ask the user a clarifying question |
 | `AGENTIC_GENERATE_AND_CHECK` | `true` | Draft and self-check the answer inside the agent |
 | `AGENTIC_REVIEW_ON_FAILED_CHECK` | `true` | Flag answers that failed the final check |
-| `AGENTIC_CHECKPOINTER` | `none` | Save agent state between steps (`memory` or `postgres`) |
+| `AGENTIC_CHECKPOINTER` | `none` | Save agent state between steps (`memory` or `mongo`) |
 | `WEB_SEARCH_ENDPOINT` / `WEB_SEARCH_API_KEY` | empty | Enable the optional web search tool |
 
 ---

@@ -1,5 +1,7 @@
 # 0006. App Service for the API, Container Apps jobs for workers (C-035, C-045)
 
+Superseded by [0008](0008-llm-gateway-and-gateway-identity.md): the repository no longer provisions or deploys infrastructure.
+
 **Context.**
 - The query API is a long-running HTTP service. It needs slots for blue-green releases and simple autoscale.
 - Ingestion is bursty and queue-driven.

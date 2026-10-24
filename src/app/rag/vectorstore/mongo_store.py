@@ -79,9 +79,7 @@ def _date_range(filters: RetrievalFilters) -> dict[str, datetime]:
     return bounds
 
 
-def build_filter(
-    filters: RetrievalFilters, kinds: tuple[str, ...] | None = None
-) -> dict[str, Any]:
+def build_filter(filters: RetrievalFilters, kinds: tuple[str, ...] | None = None) -> dict[str, Any]:
     """MQL filter for collection, ACL, kind and metadata. Valid both in find() and as a
     $vectorSearch pre-filter (only $eq / $in / range operators, combined with $and)."""
     clauses: list[dict[str, Any]] = [{"collection": filters.collection}]
@@ -249,9 +247,7 @@ class MongoVectorStore(VectorStore):
         self._analyzer = text_analyzer
         self._num_candidates_factor = max(1, int(num_candidates_factor))
         # semantic_hybrid: rerank the fused candidates in the app.
-        self._semantic_reranker = (
-            semantic_reranker if retrieval_mode == "semantic_hybrid" else None
-        )
+        self._semantic_reranker = semantic_reranker if retrieval_mode == "semantic_hybrid" else None
         self._semantic_candidates = int(semantic_candidates)
 
     @property

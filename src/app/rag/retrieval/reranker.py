@@ -2,7 +2,7 @@
   none    - keep retriever order/scores (the vector store's own semantic_hybrid reranking,
             MONGODB_SEMANTIC_RERANKER, still applies when RETRIEVAL_MODE=semantic_hybrid)
   llm     - listwise relevance scoring by the utility model (one call per request)
-  cohere  - cross-encoder rerank API (Cohere Rerank on Azure AI Foundry, or any endpoint
+  cohere  - cross-encoder rerank API (Cohere Rerank, or any endpoint
             implementing POST /v2/rerank). Placeholders: RERANKER_ENDPOINT,
             RERANKER_API_KEY, RERANKER_MODEL.
 All rerankers fail open: on error they return the input order.

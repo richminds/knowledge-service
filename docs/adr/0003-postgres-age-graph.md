@@ -1,5 +1,7 @@
 # 0003. PostgreSQL + Apache AGE for the knowledge graph (G-05)
 
+Superseded by [0007](0007-mongodb-atlas-store.md): the graph and the manifest moved to MongoDB Atlas.
+
 **Context.** Graph RAG needs entities, relations, communities and links to source chunks, plus multi-hop traversal and Cypher. Options considered were Neo4j (needs a separate licence and operations), Cosmos DB Gremlin (has no Cypher), and Azure Database for PostgreSQL with the AGE extension.
 
 **Decision.**

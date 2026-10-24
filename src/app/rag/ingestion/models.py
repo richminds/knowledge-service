@@ -22,7 +22,7 @@ ElementType = Literal[
 class SourceDocument:
     """What a connector returns: the original file plus everything known about its source."""
 
-    source: str  # stable URI: path, blob://, sharepoint://, confluence://, https://...
+    source: str  # stable URI: path, confluence://, db://, api://, https://...
     name: str  # file name, used for type detection fallback and titles
     content: bytes
     content_type: str = ""  # MIME type if the source reports one

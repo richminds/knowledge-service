@@ -1,12 +1,10 @@
-import copy
-import json
 import logging
 import sys
 
 import structlog
 
 # Chatty SDK loggers (every HTTP request/response at INFO) drown out application events.
-_NOISY_LOGGERS = ("azure", "httpx", "httpx2", "httpcore", "openai", "urllib3")
+_NOISY_LOGGERS = ("httpx", "httpx2", "httpcore", "urllib3")
 
 
 def configure_logging(log_level: str = "INFO", mask_pii: bool = True) -> None:
@@ -33,7 +31,7 @@ def configure_logging(log_level: str = "INFO", mask_pii: bool = True) -> None:
     )
 
     formatter = structlog.stdlib.ProcessorFormatter(
-        # Plain stdlib records (uvicorn, Azure SDK) get the same fields as structlog ones.
+        # Plain stdlib records (uvicorn, httpx) get the same fields as structlog ones.
         foreign_pre_chain=shared_processors,
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
@@ -53,36 +51,3 @@ def configure_logging(log_level: str = "INFO", mask_pii: bool = True) -> None:
 
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     return structlog.get_logger(name)
-
-
-class StructlogToOtelHandler(logging.Handler):
-    """Adapts structlog records for an OpenTelemetry (Application Insights) log handler.
-
-    structlog hands stdlib a dict as the message. Exported as-is, App Insights would show
-    a dict dump. This wrapper sends the event name as the message and every other field
-    as a log attribute, which App Insights stores as queryable `customDimensions`.
-    """
-
-    _SKIP = {"event", "level", "logger", "timestamp"}
-
-    def __init__(self, inner: logging.Handler) -> None:
-        super().__init__(level=inner.level)
-        self._inner = inner
-
-    def emit(self, record: logging.LogRecord) -> None:
-        if isinstance(record.msg, dict):
-            record = copy.copy(record)  # the stdout handler shares the original record
-            event = dict(record.msg)
-            record.msg, record.args = str(event.get("event", "")), ()
-            for key, value in event.items():
-                if key not in self._SKIP and not hasattr(record, key):
-                    is_scalar = isinstance(value, str | int | float | bool)
-                    setattr(record, key, value if is_scalar else json.dumps(value, default=str))
-        self._inner.handle(record)
-
-    def flush(self) -> None:
-        self._inner.flush()
-
-    def close(self) -> None:
-        self._inner.close()
-        super().close()

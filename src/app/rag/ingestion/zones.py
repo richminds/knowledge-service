@@ -7,8 +7,7 @@ stage can be re-run without going back to the source, and for audit.
   chunks/     chunk JSON as indexed
   quarantine/ rejected files + reason (C-070)
 
-ZONES_STORE=local (ZONES_LOCAL_ROOT, default ./.ragdata) | blob (DATA_LAKE_ACCOUNT_URL +
-DATA_LAKE_CONTAINER, managed identity) | off.
+ZONES_STORE=local (ZONES_LOCAL_ROOT, default ./.ragdata) | off.
 """
 
 import asyncio
@@ -59,25 +58,3 @@ class LocalZoneStore:
 
         await asyncio.to_thread(_write)
         return str(path)
-
-
-class BlobZoneStore:
-    def __init__(self, account_url: str, container: str, credential) -> None:
-        from azure.storage.blob.aio import BlobServiceClient
-
-        self._service = BlobServiceClient(account_url, credential=credential)
-        self._container = container
-
-    async def write(
-        self, zone: str, collection: str, source: str, name: str, data: bytes | str
-    ) -> str:
-        key = _key(zone, collection, source, name)
-        blob = self._service.get_blob_client(self._container, key)
-        payload = data.encode() if isinstance(data, str) else data
-        await blob.upload_blob(
-            payload, overwrite=True, metadata={"source": source[:1024], "collection": collection}
-        )
-        return f"blob://{self._container}/{key}"
-
-    async def close(self) -> None:
-        await self._service.close()

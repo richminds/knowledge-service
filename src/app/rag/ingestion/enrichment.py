@@ -3,7 +3,7 @@
   profile   - per document: summary (C-104), doc type (C-105), effective date, tags
   context   - per chunk: 1-2 sentences situating it in the document, prepended before
               embedding and BM25 ("contextual retrieval", S-04). The full document is the
-              system message so Azure OpenAI prompt caching (identical prefix >= 1024
+              system message so provider prompt caching (identical prefix >= 1024
               tokens) makes the per-chunk calls cheap (S-05).
   questions - per chunk: questions it answers, indexed as kind=question (S-06, doc2query)
   summaries - per chunk: a summary indexed as kind=summary (S-07, multi-vector)

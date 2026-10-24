@@ -1,25 +1,18 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.8.0
-pydantic-settings[azure-key-vault]>=2.7.0
+pydantic-settings>=2.7.0
 httpx>=0.27.0
 python-multipart>=0.0.9
 tenacity>=8.5.0
 structlog>=24.1.0
 pyyaml>=6.0
-PyJWT[crypto]>=2.8.0
-openai>=1.40.0
-azure-identity>=1.17.0
-azure-keyvault-secrets>=4.8.0
-azure-storage-blob[aio]>=12.20.0
-azure-monitor-opentelemetry>=1.6.0
-azure-cosmos>=4.7.0
-azure-servicebus>=7.12.0
+# Metrics and spans (no exporter is configured; calls are no-ops until one is)
+opentelemetry-api>=1.25.0
 redis>=5.0.0
 tiktoken>=0.7.0
 # Parsing
 pypdf>=4.3.0
-pillow>=10.0.0  # images embedded in PDFs (pypdf image extraction)
 python-docx>=1.1.0
 python-pptx>=1.0.0
 openpyxl>=3.1.0

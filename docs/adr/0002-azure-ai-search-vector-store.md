@@ -1,5 +1,7 @@
 # 0002. Azure AI Search as the vector and keyword store (C-041)
 
+Superseded by [0007](0007-mongodb-atlas-store.md): vectors and keyword search moved to MongoDB Atlas.
+
 **Context.** Semantic RAG needs dense search, BM25, filtering by ACL and metadata, and ideally a reranker. The platform is Azure.
 
 **Decision.**

@@ -1,14 +1,14 @@
-.PHONY: install dev run test lint format typecheck check docker-build docker-run ingest create-index eval eval-vector bicep-check
+.PHONY: install dev run test lint format typecheck check docker-build docker-run ingest create-index eval eval-vector
 
 install:
 	pip install -r requirements-dev.txt
 	pre-commit install
 
 dev:
-	uvicorn app.main:app --app-dir src --reload --port 8000
+	uvicorn app.main:app --app-dir src --reload --port 8090
 
 run:
-	uvicorn app.main:app --app-dir src --host 0.0.0.0 --port 8000
+	uvicorn app.main:app --app-dir src --host 0.0.0.0 --port 8090
 
 test:
 	pytest --cov=src --cov-report=term-missing
@@ -44,5 +44,3 @@ eval:
 eval-vector:  ## every mode on every vector store (VECTOR_STORE_PROVIDERS), with the LLM judge
 	python scripts/run_eval.py --golden evals/golden_set.jsonl --top-k 5 --rag-mode all --vector-store all --judge
 
-bicep-check:  ## compile-check infra/ without the Bicep CLI (uses the VS Code Bicep extension)
-	python scripts/check_bicep.py --strict

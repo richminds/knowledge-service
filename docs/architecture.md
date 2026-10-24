@@ -2,46 +2,48 @@
 
 ```text
                      ┌──────────────────────── Ingestion ─────────────────────────┐
- SharePoint, blob,   │ connectors ─► detect type ─► parse ─► clean/govern ─► metadata│
+ local files,        │ connectors ─► detect type ─► parse ─► clean/govern ─► metadata│
  Confluence, web,  ──►  ─► chunk ─► enrich ─► embed ─► MongoDB Atlas (vector+BM25)    │
- DB, REST            │                    └─► extract graph ─► MongoDB graph colls.  │
-                     │ zones: raw/parsed/clean/chunks/quarantine (Blob), manifest (Mongo)│
+ DB, REST, upload    │                    └─► extract graph ─► MongoDB graph colls.  │
+                     │ zones: raw/parsed/clean/chunks/quarantine (local), manifest (Mongo)│
                      └─────────▲───────────────────────────────▲─────────────────────┘
-          Event Grid ─► Service Bus ─► Container Apps job      │ nightly reconcile + graph jobs
-                                                              │
- User ─► /ui or API ─► auth (Entra / API key) ─► rate limit ─► query understanding
+          CLI / API job / upload                               │ scheduled reconcile + graph scripts
+                                                               │
+ User ─► API gateway ─► /ui or API ─► auth (gateway headers) ─► rate limit ─► query understanding
         ─► router (RAG_MODE / auto) ─┬─ semantic: hybrid search, MMR, parent/window expansion
                                      ├─ graph:    local, path, global, DRIFT, Cypher templates
                                      └─ agentic:  LangGraph plan → tools → grade → check
-        ─► fuse/rerank/context budget ─► Azure OpenAI ─► citations + confidence ─► SSE
-        ─► conversation store (Cosmos) · answer cache (Redis) · telemetry (App Insights)
+        ─► fuse/rerank/context budget ─► LLM gateway ─► citations + confidence ─► SSE
+        ─► conversation store (Mongo) · answer cache (Redis) · JSON logs (stdout)
 ```
 
 ## Components
 
-| Layer | Code | Azure resource (`infra/`) |
+| Layer | Code | External dependency |
 |---|---|---|
-| API and UI | `src/app/main.py`, `api/v1/`, `static/chat.html` | App Service (Linux container) + prod staging slot |
-| Auth | `core/auth.py`, `core/ratelimit.py` | Entra app registration (manual), Redis (optional) |
-| Query understanding | `rag/query/` | Azure OpenAI utility deployment |
+| API and UI | `src/app/main.py`, `api/v1/`, `static/chat.html` | Container image (`Dockerfile`), reached through the API gateway |
+| Auth | `core/auth.py`, `core/caller_context.py`, `core/ratelimit.py` | API gateway (identity headers), Redis (optional) |
+| Query understanding | `rag/query/` | LLM gateway |
 | Semantic RAG | `rag/strategies/semantic.py`, `rag/retrieval/`, `rag/vectorstore/` | MongoDB Atlas Vector Search + Atlas Search |
 | Graph RAG | `rag/strategies/graph.py`, `rag/graph/` | MongoDB collections (entities, relations, claims) + Atlas Vector Search for entity linking |
 | Agentic RAG | `rag/strategies/agentic.py`, `rag/agents/tools.py` | LangGraph in-process; MongoDB checkpointer optional |
 | Router | `rag/strategies/registry.py`, `services/retrieval_service.py` | none |
-| Generation | `rag/generation/`, `prompts/*.yaml` | Azure OpenAI chat deployment (+ fallback) |
-| Safety | `rag/safety.py`, `core/pii.py` | Content Safety, Language (optional) |
-| Ingestion | `rag/ingestion/`, `scripts/ingestion_worker.py` | Storage, Event Grid, Service Bus, Container Apps jobs |
-| Evaluation | `rag/evaluation/`, `scripts/run_eval.py`, `evals/` | QA environment + pipeline quality gate |
-| Observability | `core/telemetry.py`, `core/metrics.py` | Log Analytics, App Insights, alerts, workbook, budget |
+| Generation | `rag/generation/`, `prompts/*.yaml` | LLM gateway (`POST /v1/llm`, `POST /v1/embeddings`); it picks the model and fails over |
+| Safety | `rag/safety.py`, `core/pii.py` | none (heuristic and regex checks) |
+| Ingestion | `rag/ingestion/`, `scripts/ingest_cli.py` | MongoDB; Confluence, web, `db://` and `api://` sources when configured |
+| Evaluation | `rag/evaluation/`, `scripts/run_eval.py`, `evals/` | `run_eval.py --gate` |
+| Observability | `core/logging.py`, `core/metrics.py` | JSON logs on stdout; OpenTelemetry metrics are recorded but no exporter is configured |
 
 ## Security model
 
-- **Identity.** One user-assigned identity is shared by the web app and the jobs. It has least-privilege data roles on Storage, Key Vault, OpenAI, Service Bus and Cosmos. No service keys are stored, with two exceptions kept in Key Vault: the Redis URL and the MongoDB Atlas connection string (`mongodb-url`).
-- **Users.** Entra tokens are validated against the tenant JWKS. Group IDs and the user ID become ACL principals, which are enforced inside every store query.
+- **Identity.** The API gateway authenticates every request against auth-service, strips any identity headers the caller sent, and injects `X-User-ID`, `X-User-Email`, `X-User-Name`, `X-Account-ID` and `X-Is-Admin` (`AUTH_MODE=gateway`). This service validates no tokens, so it must only be reachable through the gateway.
+- **Outbound LLM calls.** The caller's bearer token is forwarded to the LLM gateway, so per-user budgets and metering apply there. Calls with no caller (CLI, scripts) use `LLM_GATEWAY_API_KEY`. The service holds no model-provider credential.
+- **Secrets.** `MONGODB_URL`, `LLM_GATEWAY_API_KEY`, `REDIS_URL` and the connector credentials are environment variables.
+- **Users.** The user ID and account ID, plus `"*"`, become ACL principals, which are enforced inside every store query.
 - **Prompt-injection defence.** There are four layers: documents are scanned and quarantined at ingestion; questions are checked; retrieved passages are flagged and delimited as data; answers are checked.
 
 ## Not yet provisioned (TODO)
 
-- Private endpoints, VNet integration and egress control (C-049).
-- API Management or Front Door with WAF in front of the App Service (C-050), and as an LLM gateway (C-038).
-- LLM tracing beyond App Insights, such as Langfuse (C-052).
+- Network restriction so that only the API gateway can reach the service (required by `AUTH_MODE=gateway`), and egress control (C-049).
+- A WAF in front of the API gateway (C-050).
+- Log and metric export, and LLM tracing such as Langfuse (C-052).

@@ -76,19 +76,19 @@ flowchart LR
 | **Document** | A source file | `leave-policy.pdf` |
 | **Chunk** | A small piece of a document (about 800 tokens, roughly a page-half) | One section about "Sick leave" |
 | **Embedding / vector** | A list of numbers that captures the *meaning* of a text, so similar meanings are close together | "holiday" and "vacation" get close numbers |
-| **Vector store** | A database that finds chunks by meaning. Here: Azure AI Search (default) or pgvector | "Find chunks about time off" |
+| **Vector store** | A database that finds chunks by meaning. Here: MongoDB Atlas Vector Search | "Find chunks about time off" |
 | **Entity** | A *thing* mentioned in the text | "HR Department", "Leave Policy" |
 | **Relation** | A *link* between two entities | HR Department **owns** Leave Policy |
 | **Claim** | A dated fact about an entity (optional) | "Leave Policy was updated on 2024-01-01" |
-| **Knowledge graph** | All the entities (dots) and relations (lines) together. Here stored in PostgreSQL with the Apache AGE extension | A map of dots and lines |
+| **Knowledge graph** | All the entities (dots) and relations (lines) together. Here stored as MongoDB collections | A map of dots and lines |
 | **Ontology** | The rulebook of allowed entity and relation types (`config/ontology.yaml`) | Allowed: Person, Policy, System. Allowed links: OWNS, MANAGES |
 | **Community** | A cluster of closely connected entities | All entities about "Leave & Benefits" |
 | **Community report** | An AI-written summary of one community | "This group covers leave rules, who approves them..." |
 | **Hop** | One step along a line in the graph | A to B is 1 hop, A to C via B is 2 hops |
 | **ACL** | *Access control list*: who is allowed to see a piece of content | `["hr-team"]` or `*` (everyone) |
 | **Manifest** | A ledger recording what was ingested and its status | "leave-policy.pdf: graphed, 12 chunks" |
-| **Utility model** | The cheaper LLM used for background jobs (extraction, analysis) | |
-| **Chat model** | The LLM that writes the final answer | |
+| **Utility model** | The LLM used for background jobs (extraction, analysis). The LLM gateway picks it | |
+| **Chat model** | The LLM that writes the final answer. The LLM gateway picks it too | |
 
 ---
 
@@ -120,7 +120,7 @@ Every link remembers **which chunk it came from**, so any fact the system finds 
 
 ## 4. Ingestion: from document to graph
 
-**How to start it:** the API (`POST /api/v1/ingestion` or `/ingestion/upload`), the command line (`scripts/ingest_cli.py`), or the background worker (`scripts/ingestion_worker.py`). They all run the same pipeline: [pipeline.py](../src/app/rag/ingestion/pipeline.py).
+**How to start it:** the API (`POST /api/v1/ingestion` or `/ingestion/upload`), the command line (`scripts/ingest_cli.py`), or the scheduled reconcile (`scripts/reconcile.py`). They all run the same pipeline: [pipeline.py](../src/app/rag/ingestion/pipeline.py).
 
 The graph is built only when `graph` is one of the **targets** (`INGESTION_TARGETS=vector,graph`). The code default is `vector` only; `.env.example` turns the graph on.
 
@@ -150,10 +150,10 @@ flowchart TD
 
 | Step | What happens | Why it matters |
 |---|---|---|
-| 1. Load | A **connector** reads the file from local disk, Blob storage, SharePoint, Confluence, a website, a REST API or a database | One pipeline for many sources |
+| 1. Load | A **connector** reads the file from local disk, Confluence, a website, a REST API or a database | One pipeline for many sources |
 | 2. Safety checks | File size, malware and retention rules are checked | Bad files go to **quarantine** with a reason, and never reach the index |
 | 3. Change check | The **manifest** is consulted. Same content and same pipeline version? Skip. Only permissions changed? Just update permissions | Saves time and AI cost |
-| 4. Parse | The file (PDF, Word, Excel, image, ...) is turned into text, headings and tables. Attachments are processed too | LLMs need text |
+| 4. Parse | The file (PDF, Word, Excel, HTML, ...) is turned into text, headings and tables. Attachments are processed too. Images and audio are not ingested | LLMs need text |
 | 5. Clean and govern | Noise removed, parse quality and sensitivity checked, prompt-injection attempts caught, **personal data (PII) masked** when `PII_MODE` is set (default `off`) | Protects privacy before any AI sees the text |
 | 6. Duplicate check | Exact copies and near-copies are skipped (newest wins) | Avoids repeating the same answer |
 | 7. Metadata | Adds a stable `doc_id`, title, document type, dates, tags and ACL | Enables filtering and security |
@@ -437,7 +437,7 @@ Two chunks, from two different documents, in the same collection:
 
 ```mermaid
 flowchart TD
-    S1["1. Start ingestion<br/>API / CLI / worker, targets = vector,graph"] --> S2["2. Load, check, parse, clean<br/>mask PII if on, skip duplicates"]
+    S1["1. Start ingestion<br/>API / CLI / reconcile, targets = vector,graph"] --> S2["2. Load, check, parse, clean<br/>mask PII if on, skip duplicates"]
     S2 --> S3["3. Add metadata<br/>doc_id, ACL, title, dates"]
     S3 --> S4["4. Chunk the text<br/>(shared with the vector path)"]
     S4 --> S5["5. Delete old graph data<br/>for this source"]
@@ -445,7 +445,7 @@ flowchart TD
     S6 --> S7["7. LLM returns JSON<br/>entities, relations, weights"]
     S7 --> S8["8. Validate against ontology<br/>resolve aliases, apply limits"]
     S8 --> S9["9. Save to graph DB<br/>Chunk, Entity, MENTIONS, RELATED"]
-    S9 --> S10["10. Embed entity descriptions<br/>save to pgvector (optional)"]
+    S9 --> S10["10. Embed entity descriptions<br/>save on the entity (optional)"]
     S10 --> S11["11. Write manifest<br/>status = graphed"]
     S11 --> S12["12. Run maintenance job later<br/>resolve, embed, communities"]
 ```
@@ -553,7 +553,7 @@ Embeddings are used in a few places, as an optional extra:
 | What | Embedded? | Where it goes | Purpose |
 |---|---|---|---|
 | Relations (edges) | **No** | Graph only | Found by walking links |
-| Entity descriptions (`name (type): description`) | **Yes, optional** | pgvector, next to the graph | Matching a question to an entity by meaning |
+| Entity descriptions (`name (type): description`) | **Yes, optional** | On the entity documents (Atlas Vector Search) | Matching a question to an entity by meaning |
 | Chunks | Yes | Vector store | Normal semantic and hybrid search |
 | Community reports | Yes | Vector store | Global search |
 

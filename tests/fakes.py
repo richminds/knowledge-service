@@ -1,4 +1,4 @@
-"""In-memory stand-ins for Azure OpenAI, the MongoDB vector store and graph DB, for offline tests."""
+"""In-memory stand-ins for the LLM gateway, MongoDB vector store and graph DB (offline tests)."""
 
 import hashlib
 import json

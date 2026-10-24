@@ -19,7 +19,7 @@ class Connector(ABC):
     """A data source. `iterate` yields every document under a URI with its ACL and change
     markers; the pipeline handles type detection, parsing and change detection."""
 
-    #: URI prefixes this connector handles, e.g. ("sharepoint://",)
+    #: URI prefixes this connector handles, e.g. ("confluence://",)
     schemes: tuple[str, ...] = ()
 
     @abstractmethod

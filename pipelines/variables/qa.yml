@@ -1,6 +1,0 @@
-variables:
-  environmentName: "qa"
-  azureServiceConnection: "sc-azure-oissa-rag-qa" # ARM service connection (workload identity federation)
-  resourceGroup: "rg-oissa-rag-qa"
-  location: "eastus2"
-  bicepParamFile: "infra/qa.bicepparam"

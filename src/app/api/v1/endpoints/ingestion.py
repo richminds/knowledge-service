@@ -43,7 +43,7 @@ async def start_ingestion(
     ingestion_service: IngestionServiceDep,
     user: IngestionUser,
 ) -> IngestionResponse:
-    """Async ingestion job (local path or blob://) into the vector and/or graph store."""
+    """Async ingestion job (local path or connector URI) into the vector and/or graph store."""
     job_id = ingestion_service.create_job()
     background_tasks.add_task(
         ingestion_service.run_ingestion,

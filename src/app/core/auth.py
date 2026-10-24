@@ -1,29 +1,34 @@
-"""Caller authentication and the principals used for ACL filtering (C-048, C-154).
+"""Caller identity, read off the headers the API gateway injects, and the principals used for
+ACL filtering (C-048, C-154).
+
+This service validates no tokens and holds no signing key. Every caller reaches it through
+the API gateway, which authenticates the request against auth-service (``GET /auth/me``),
+**strips** any identity headers the caller tried to send, and injects verified ones. Same
+contract as makemerich-backend (app/auth/dependencies.py) and llm-gateway:
+
+  ``X-User-ID``      auth-service's ``user_id`` (``USR-<hex>``)
+  ``X-User-Email``   the record's email
+  ``X-User-Name``    display name
+  ``X-Account-ID``   the app account the token is scoped to (omitted when there is none)
+  ``X-Is-Admin``     ``true`` for admins (only ever sent when true)
+
+The caller's bearer token is forwarded too; it is not validated here, only carried on to
+the LLM gateway (app/core/caller_context.py).
 
 AUTH_MODE:
-  none     - no authentication; ACLs are NOT enforced (local development only)
-  api_key  - shared X-API-Key for service-to-service calls; the caller gets
-             API_KEY_PRINCIPALS (default "*": documents shared with everyone)
-  entra    - Entra ID bearer tokens (user sign-in); principals = user object id + group ids
-  entra+api_key - either of the two
+  gateway - the headers above are required; no ``X-User-ID`` means 401
+  none    - no authentication; ACLs are NOT enforced (local development only)
 
-Entra setup (placeholders in config): register an API app, expose a scope, set
-ENTRA_TENANT_ID and ENTRA_API_AUDIENCE, and enable the `groups` claim (Token configuration
--> Add groups claim -> Security groups). Users in > 200 groups get a group-overage claim
-instead; resolving it needs Microsoft Graph (TODO: ENTRA_GROUP_OVERAGE=graph).
+**The trade this makes.** Trusting a header is only sound while the caller cannot set it.
+The gateway's unconditional strip guarantees that for traffic through the gateway, and
+nothing else does: restrict this service to the gateway at the network level.
 """
 
-import asyncio
-import hashlib
-import secrets
 from dataclasses import dataclass, field, replace
-from functools import lru_cache
 from typing import Annotated
 
-import jwt
 import structlog
-from fastapi import Depends, HTTPException, Request, Security, status
-from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
+from fastapi import Depends, HTTPException, Request, status
 
 from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
@@ -31,18 +36,15 @@ from app.rag.types import PUBLIC
 
 logger = get_logger(__name__)
 
-_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-_bearer = HTTPBearer(auto_error=False)
-
 
 @dataclass(frozen=True)
 class UserContext:
     user_id: str
     name: str = ""
-    groups: tuple[str, ...] = ()
-    roles: tuple[str, ...] = ()
-    tenant_id: str = ""
-    auth_method: str = "none"  # none | api_key | entra
+    email: str = ""
+    account_id: str = ""
+    is_admin: bool = False
+    auth_method: str = "none"  # none | gateway
     extra_principals: tuple[str, ...] = field(default_factory=tuple)
     enforce_acl: bool = True
 
@@ -51,7 +53,8 @@ class UserContext:
         """ACL principals for RetrievalFilters; None disables ACL enforcement."""
         if not self.enforce_acl:
             return None
-        return frozenset({PUBLIC, self.user_id, *self.groups, *self.extra_principals})
+        account = (self.account_id,) if self.account_id else ()
+        return frozenset({PUBLIC, self.user_id, *account, *self.extra_principals})
 
     @property
     def rate_limit_key(self) -> str:
@@ -60,87 +63,42 @@ class UserContext:
 
 ANONYMOUS = UserContext(user_id="anonymous", auth_method="none", enforce_acl=False)
 
-
-@lru_cache(maxsize=4)
-def _jwks_client(tenant_id: str) -> jwt.PyJWKClient:
-    return jwt.PyJWKClient(
-        f"https://login.microsoftonline.com/{tenant_id}/discovery/v2.0/keys",
-        cache_keys=True,
-        lifespan=3600,
-    )
+CREDENTIALS_EXCEPTION = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="Could not validate credentials",
+    headers={"WWW-Authenticate": "Bearer"},
+)
 
 
-def _decode_entra_token(token: str, settings: Settings) -> dict:
-    tenant = settings.entra_tenant_id
-    signing_key = _jwks_client(tenant).get_signing_key_from_jwt(token)
-    return jwt.decode(
-        token,
-        signing_key.key,
-        algorithms=["RS256"],
-        audience=[a for a in settings.entra_api_audience if a],
-        # v2 and v1 token issuers
-        issuer=[
-            f"https://login.microsoftonline.com/{tenant}/v2.0",
-            f"https://sts.windows.net/{tenant}/",
-        ],
-        options={"require": ["exp", "iat", "aud", "iss"]},
-    )
+def identity_from_headers(request: Request) -> UserContext | None:
+    """The identity the gateway asserted, or None when there is none.
 
-
-async def _entra_user(token: str, settings: Settings) -> UserContext:
-    try:
-        # PyJWKClient fetches keys over the network (cached); keep it off the event loop.
-        claims = await asyncio.to_thread(_decode_entra_token, token, settings)
-    except jwt.PyJWTError as exc:
-        logger.info("auth_rejected", reason=str(exc))
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid bearer token") from exc
-    if "_claim_names" in claims and "groups" in claims.get("_claim_names", {}):
-        logger.warning("entra_group_overage", user=claims.get("oid"))
+    Read fresh from headers on every request: the gateway re-derives them per request, and
+    this service never holds an opinion about identity that outlives one call.
+    """
+    user_id = (request.headers.get("x-user-id") or "").strip()
+    if not user_id:
+        return None
+    email = (request.headers.get("x-user-email") or "").strip().lower()
     return UserContext(
-        user_id=claims.get("oid") or claims.get("sub", ""),
-        name=claims.get("preferred_username") or claims.get("name", ""),
-        groups=tuple(claims.get("groups") or ()),
-        roles=tuple(claims.get("roles") or ()),
-        tenant_id=claims.get("tid", ""),
-        auth_method="entra",
-    )
-
-
-def _api_key_user(settings: Settings, api_key: str) -> UserContext:
-    fingerprint = hashlib.sha256(api_key.encode()).hexdigest()[:12]
-    return UserContext(
-        user_id=f"service:{fingerprint}",
-        name="api-key",
-        auth_method="api_key",
-        extra_principals=tuple(settings.api_key_principals),
+        user_id=user_id,
+        name=(request.headers.get("x-user-name") or "").strip() or email,
+        email=email,
+        account_id=(request.headers.get("x-account-id") or "").strip(),
+        is_admin=(request.headers.get("x-is-admin") or "").strip().lower() == "true",
+        auth_method="gateway",
     )
 
 
 async def get_current_user(
-    request: Request,
-    settings: Annotated[Settings, Depends(get_settings)],
-    api_key: Annotated[str | None, Security(_api_key_header)] = None,
-    bearer: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer)] = None,
+    request: Request, settings: Annotated[Settings, Depends(get_settings)]
 ) -> UserContext:
-    mode = settings.auth_mode
-    user: UserContext | None = None
-
-    if mode == "none":
+    if settings.auth_mode == "none":
         user = ANONYMOUS
-    if user is None and "entra" in mode and bearer is not None:
-        if not settings.entra_tenant_id:
-            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Entra auth not configured")
-        user = await _entra_user(bearer.credentials, settings)
-    if user is None and "api_key" in mode and api_key:
-        expected = settings.api_key.get_secret_value()
-        if expected and secrets.compare_digest(api_key, expected):
-            user = _api_key_user(settings, api_key)
-    if user is None:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "Authentication required",
-            headers={"WWW-Authenticate": "Bearer" if "entra" in mode else "ApiKey"},
-        )
+    else:
+        user = identity_from_headers(request)
+        if user is None:
+            raise CREDENTIALS_EXCEPTION
     if not settings.acl_enforcement and user.enforce_acl:
         user = replace(user, enforce_acl=False)
     structlog.contextvars.bind_contextvars(user_id=user.user_id, auth_method=user.auth_method)
@@ -151,14 +109,18 @@ async def get_current_user(
 CurrentUser = Annotated[UserContext, Depends(get_current_user)]
 
 
+def _require_admin(user: UserContext) -> None:
+    # Local (AUTH_MODE=none) callers are trusted; gateway callers need X-Is-Admin.
+    if user.auth_method == "gateway" and not user.is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Requires an admin account")
+
+
 async def require_ingestion_role(
     user: CurrentUser, settings: Annotated[Settings, Depends(get_settings)]
 ) -> UserContext:
-    """Ingestion/deletion endpoints: Entra users need INGESTION_REQUIRED_ROLE (an app role,
-    e.g. "Ingestion.Write") when it is set; API-key and local callers are trusted."""
-    role = settings.ingestion_required_role
-    if role and user.auth_method == "entra" and role not in user.roles:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, f"Requires the '{role}' role")
+    """Ingestion/deletion endpoints: admins only when INGESTION_REQUIRES_ADMIN is on."""
+    if settings.ingestion_requires_admin:
+        _require_admin(user)
     return user
 
 
@@ -168,13 +130,9 @@ IngestionUser = Annotated[UserContext, Depends(require_ingestion_role)]
 async def require_admin_role(
     user: CurrentUser, settings: Annotated[Settings, Depends(get_settings)]
 ) -> UserContext:
-    """Admin RAG studio: Entra users need ADMIN_REQUIRED_ROLE (case-insensitive, as the UI
-    checks it); API-key and local callers are trusted, like ingestion."""
-    role = settings.admin_required_role.strip().lower()
-    if role and user.auth_method == "entra" and role not in {r.lower() for r in user.roles}:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, f"Requires the '{settings.admin_required_role}' role"
-        )
+    """Admin RAG studio: admins only when ADMIN_REQUIRES_ADMIN is on (the default)."""
+    if settings.admin_requires_admin:
+        _require_admin(user)
     return user
 
 

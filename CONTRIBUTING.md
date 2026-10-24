@@ -10,19 +10,19 @@ cp .env.example .env                              # then fill in the TODO values
 make test
 ```
 
-Tests never call Azure. They use the fakes in `tests/fakes.py`, and `tests/conftest.py` clears any Azure settings from your shell.
+Tests never call the LLM gateway or MongoDB Atlas. They use the fakes in `tests/fakes.py`, and `tests/conftest.py` clears gateway and database settings from your shell.
 
 ## Workflow
 
 1. Branch from `develop` (`feature/<short-name>`).
-2. Run `make check` (lint, type-check, tests) before pushing. CI runs the same checks.
-3. Merging to `develop` deploys to QA and runs the quality gate. `main` deploys to prod after approval.
+2. Run `make check` (lint, type-check, tests) before pushing.
+3. Merge to `develop`, then `develop` into `main` for a release. The repository has no deployment pipeline; whoever deploys the image runs `scripts/run_eval.py --gate` against QA first.
 4. If you change prompts, retrieval or chunking, attach the `scripts/run_eval.py --rag-mode all --judge` output to the PR.
 
 ## Conventions
 
 - Black and ruff, with a line length of 100. Follow the style of the surrounding code.
-- Settings go in `src/app/core/config.py`, with a `TODO` placeholder and a comment. Secrets go in Key Vault, never in code or `.env.example` values.
+- Settings go in `src/app/core/config.py`, with a `TODO` placeholder and a comment. Secrets are environment variables (your `.env` locally), never in code or `.env.example` values.
 - Every retriever and store method takes `RetrievalFilters` and must enforce `principals`. Add a test for each new one.
 - Record significant technology choices as an ADR in `docs/adr/`.
 

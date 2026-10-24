@@ -1,10 +1,11 @@
 """Load test (C-224): realistic chat traffic against a deployed environment.
 
-Run against QA only (it calls Azure OpenAI and costs tokens):
+Run against QA only (it calls the LLM gateway and costs tokens). Go through the API
+gateway, which authenticates the token and injects the identity headers this service reads:
 
     pip install locust
-    export RAG_API_KEY=...            # or RAG_BEARER_TOKEN=<Entra access token>
-    locust -f tests/load/locustfile.py --host https://<qa-app>.azurewebsites.net \
+    export RAG_BEARER_TOKEN=<auth-service access token>
+    locust -f tests/load/locustfile.py --host https://<qa-api-gateway-route-to-this-service> \
            --users 20 --spawn-rate 2 --run-time 10m --headless --csv evals/results/load
 
 Targets (TODO: confirm with C-007 non-functional requirements): p95 chat < 8 s,
@@ -31,8 +32,6 @@ RAG_MODES = [m for m in os.getenv("RAG_LOAD_MODES", "").split(",") if m]  # e.g.
 def _headers() -> dict[str, str]:
     if token := os.getenv("RAG_BEARER_TOKEN"):
         return {"Authorization": f"Bearer {token}"}
-    if key := os.getenv("RAG_API_KEY"):
-        return {"X-API-Key": key}
     return {}
 
 

@@ -1,5 +1,5 @@
 """Phase 1 (common foundation): ACL, query understanding, context assembly, guardrails,
-prompts, failover, cache, conversations."""
+prompts, cache, conversations."""
 
 import pytest
 
@@ -294,38 +294,6 @@ def test_context_blocks_carry_metadata():
     assert "date: 2024-03-01" in block and "page: 4" in block and "<passage>" in block
 
 
-async def test_failover_to_secondary_deployment():
-    import httpx
-    from openai import APIConnectionError
-
-    from app.rag.generation.llm_client import ChatClient
-
-    client = ChatClient(
-        "https://primary.openai.azure.com",
-        "k",
-        "2024-10-21",
-        "gpt-4o",
-        fallback_endpoint="https://secondary.openai.azure.com",
-        fallback_deployment="gpt-4o-dr",
-    )
-    calls = []
-
-    class Primary:
-        async def create(self, **kw):
-            calls.append(("primary", kw["model"]))
-            raise APIConnectionError(request=httpx.Request("POST", "https://primary"))
-
-    class Secondary:
-        async def create(self, **kw):
-            calls.append(("secondary", kw["model"]))
-            return "ok"
-
-    client._client = type("C", (), {"chat": type("Ch", (), {"completions": Primary()})()})()
-    client._fallback = type("C", (), {"chat": type("Ch", (), {"completions": Secondary()})()})()
-    assert await client._create("gpt-4o", messages=[]) == "ok"
-    assert calls == [("primary", "gpt-4o"), ("secondary", "gpt-4o-dr")]
-
-
 # -- service: shortcuts, memory, cache -------------------------------------------------------------
 async def test_chitchat_and_blocked_input_skip_retrieval(retrieval_service, chat_client):
     hi = await retrieval_service.chat(ChatRequest(query="hello"))
@@ -348,6 +316,61 @@ async def test_conversation_history_is_loaded_by_id(
     assert chat_client.calls[-1]["history"][0] == ("user", "annual leave days")
 
 
+class _FakeConversationCollection:
+    """Just enough of pymongo's AsyncCollection for MongoConversationStore."""
+
+    def __init__(self) -> None:
+        self.docs: list[dict] = []
+        self.indexes: list = []
+
+    def _match(self, query: dict) -> list[dict]:
+        return [d for d in self.docs if all(d.get(k) == v for k, v in query.items())]
+
+    async def create_index(self, keys, unique=False):
+        self.indexes.append((keys, unique))
+
+    async def find_one(self, query, projection=None):
+        found = self._match(query)
+        return found[0] if found else None
+
+    async def update_one(self, query, update, upsert=False):
+        found = self._match(query)
+        doc = found[0] if found else None
+        if doc is None and upsert:
+            doc = dict(query)
+            self.docs.append(doc)
+        push = update["$push"]["turns"]
+        doc["turns"] = (doc.get("turns", []) + push["$each"])[push["$slice"] :]
+        doc.update(update["$set"])
+
+    async def delete_many(self, query):
+        gone = self._match(query)
+        self.docs = [d for d in self.docs if d not in gone]
+        return type("Result", (), {"deleted_count": len(gone)})()
+
+
+async def test_mongo_conversation_store_scopes_by_user_and_trims_turns():
+    from app.services.conversations import MongoConversationStore
+
+    collection = _FakeConversationCollection()
+    store = MongoConversationStore(collection, max_turns_kept=2)
+    for i in range(3):
+        await store.append("c1", "alice", f"q{i}", f"a{i}", response_id="r", rag_mode="semantic",
+                           sources=[])  # fmt: skip
+    await store.append("c1", "bob", "bq", "ba", response_id="r", rag_mode="semantic", sources=[])
+
+    assert await store.history("c1", "alice", max_turns=5) == [
+        ("user", "q1"), ("assistant", "a1"), ("user", "q2"), ("assistant", "a2"),
+    ]  # fmt: skip
+    assert await store.history("c1", "bob", max_turns=5) == [("user", "bq"), ("assistant", "ba")]
+    assert await store.history("c1", "mallory", max_turns=5) == []
+    assert collection.indexes == [([("user_id", 1), ("conversation_id", 1)], True)]
+
+    assert await store.delete_user("bob") == 1
+    assert await store.history("c1", "bob", max_turns=5) == []
+    assert await store.history("c1", "alice", max_turns=1) == [("user", "q2"), ("assistant", "a2")]
+
+
 async def test_answer_cache_hits_and_is_scoped(ingestion_pipeline, strategies, chat_client):
     from app.core.auth import UserContext
     from app.rag.strategies.registry import RagStrategyRegistry
@@ -358,7 +381,7 @@ async def test_answer_cache_hits_and_is_scoped(ingestion_pipeline, strategies, c
     service = RetrievalService(
         RagStrategyRegistry(strategies, RagMode.SEMANTIC), chat_client, cache=cache
     )
-    alice = UserContext(user_id="alice", groups=("g1",))
+    alice = UserContext(user_id="alice", account_id="ACC-1")
     bob = UserContext(user_id="bob")
 
     first = await service.chat(ChatRequest(query="annual leave days"), alice)

@@ -1,5 +1,7 @@
 # 0005. Keyless access with one workload identity (C-046, C-047)
 
+Superseded by [0008](0008-llm-gateway-and-gateway-identity.md): the Azure services this identity accessed are gone; secrets are environment variables.
+
 **Context.** Keys in app settings leak, need rotation and cannot be scoped.
 
 **Decision.**

@@ -8,13 +8,14 @@ from typing import Annotated
 
 from fastapi import Depends
 
-from app.core.azure_auth import get_azure_credential
 from app.core.config import RagMode, Settings, get_settings
 from app.rag.cache import AnswerCache
 from app.rag.context.assembler import AssemblyOptions, ContextAssembler
 from app.rag.evaluation.judge import AnswerJudge
 from app.rag.evaluation.quality import QualityAssessor
 from app.rag.generation.llm_client import ChatClient
+from app.rag.generation.llm_gateway import get_llm_client, reset_llm_client
+from app.rag.generation.llm_gateway_sdk import RemoteLLMClient
 from app.rag.graph.extraction import GraphExtractor
 from app.rag.graph.factory import get_graph_store
 from app.rag.ingestion.embeddings import EmbeddingCache, EmbeddingClient
@@ -34,8 +35,8 @@ from app.rag.strategies.semantic import SemanticOptions, SemanticRagStrategy
 from app.rag.vectorstore.factory import get_vector_store
 from app.services.conversations import (
     ConversationStore,
-    CosmosConversationStore,
     InMemoryConversationStore,
+    MongoConversationStore,
 )
 from app.services.ingestion_service import IngestionService
 from app.services.retrieval_service import RetrievalService
@@ -51,16 +52,24 @@ _cache: AnswerCache | None = None
 _safety: ContentSafety | None = None
 
 
+def get_gateway_client(settings: Settings) -> RemoteLLMClient:
+    """The one pooled LLM gateway client (chat and embeddings)."""
+    return get_llm_client(
+        settings.llm_gateway_url,
+        settings.api_gateway_url,
+        settings.llm_gateway_api_key.get_secret_value(),
+        settings.llm_timeout_seconds,
+    )
+
+
 def get_embedding_client(settings: SettingsDep) -> EmbeddingClient:
     global _embedding_client
     if _embedding_client is None:
         _embedding_client = EmbeddingClient(
-            endpoint=settings.azure_openai_endpoint,
-            api_key=settings.azure_openai_api_key.get_secret_value(),
-            api_version=settings.azure_openai_api_version,
-            deployment=settings.azure_openai_embedding_deployment,
+            get_gateway_client(settings),
             batch_size=settings.embedding_batch_size,
             dimensions=settings.embedding_dimensions,
+            caller=settings.llm_caller,
         )
     return _embedding_client
 
@@ -69,16 +78,10 @@ def get_chat_client(settings: SettingsDep) -> ChatClient:
     global _chat_client
     if _chat_client is None:
         _chat_client = ChatClient(
-            endpoint=settings.azure_openai_endpoint,
-            api_key=settings.azure_openai_api_key.get_secret_value(),
-            api_version=settings.azure_openai_api_version,
-            deployment=settings.azure_openai_chat_deployment,
+            get_gateway_client(settings),
             temperature=settings.generation_temperature,
             max_tokens=settings.generation_max_tokens,
-            utility_deployment=settings.utility_deployment,
-            fallback_endpoint=settings.azure_openai_fallback_endpoint,
-            fallback_api_key=settings.azure_openai_fallback_api_key.get_secret_value(),
-            fallback_deployment=settings.azure_openai_fallback_chat_deployment,
+            caller=settings.llm_caller,
             prompt_versions=settings.prompt_versions,
             organisation=settings.organisation_name,
         )
@@ -88,13 +91,14 @@ def get_chat_client(settings: SettingsDep) -> ChatClient:
 def get_conversation_store(settings: SettingsDep) -> ConversationStore:
     global _conversations
     if _conversations is None:
-        if settings.conversation_store == "cosmos":
-            key = settings.cosmos_key.get_secret_value()
-            _conversations = CosmosConversationStore(
-                settings.cosmos_endpoint,
-                settings.cosmos_database,
-                settings.cosmos_conversation_container,
-                credential=key or get_azure_credential(),
+        if settings.conversation_store == "mongo":
+            from app.core.mongo import get_mongo_database
+
+            database = get_mongo_database(
+                settings.mongodb_url.get_secret_value(), settings.mongodb_database
+            )
+            _conversations = MongoConversationStore(
+                database[settings.mongodb_conversations_collection]
             )
         else:
             _conversations = InMemoryConversationStore()
@@ -117,9 +121,6 @@ def get_content_safety(settings: Settings) -> ContentSafety:
     if _safety is None:
         _safety = ContentSafety(
             mode=settings.content_safety_mode,
-            endpoint=settings.content_safety_endpoint,
-            api_key=settings.content_safety_api_key.get_secret_value(),
-            severity_threshold=settings.content_safety_severity_threshold,
             block_output_pii=settings.block_output_pii,
         )
     return _safety
@@ -158,9 +159,7 @@ def build_ingestion_pipeline(settings: Settings) -> IngestionPipeline:
         if settings.embedding_cache_enabled:
             embedder = EmbeddingCache(
                 embedder,
-                model_key=(
-                    f"{settings.azure_openai_embedding_deployment}@{settings.embedding_dimensions}"
-                ),
+                model_key=f"llm-gateway@{settings.embedding_dimensions}",
                 redis_url=settings.redis_url.get_secret_value(),
             )
     return IngestionPipeline(
@@ -434,6 +433,7 @@ def reset() -> None:
     global _conversations, _cache, _safety
     _embedding_client = _chat_client = _ingestion_service = _retrieval_service = None
     _conversations = _cache = _safety = None
+    reset_llm_client()
     from app.rag.graph import factory as graph_factory
     from app.rag.vectorstore import factory as vector_factory
 

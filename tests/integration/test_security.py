@@ -1,7 +1,5 @@
 """Authentication, ACL enforcement over HTTP, rate limiting, deletion endpoints."""
 
-from pydantic import SecretStr
-
 from app.core.config import get_settings
 
 
@@ -14,59 +12,67 @@ def _upload(client, name, text, acl="", headers=None):
     )
 
 
-def test_entra_token_principals_drive_acl(client, entra):
+def test_gateway_identity_drives_acl(client, gateway):
+    # Documents shared with a user id or an account id; the gateway asserts both per request.
     assert (
-        _upload(client, "hr.md", "Payroll schedule for HR staff", "grp-hr", entra()).status_code
+        _upload(client, "mine.md", "Payroll schedule for alice", "alice", gateway()).status_code
+        == 200
+    )
+    assert (
+        _upload(client, "hr.md", "Payroll schedule for HR staff", "ACC-hr", gateway()).status_code
         == 200
     )
     assert (
         _upload(
-            client, "pub.md", "Payroll questions go to the service desk", "", entra()
+            client, "pub.md", "Payroll questions go to the service desk", "", gateway()
         ).status_code
         == 200
     )
 
-    outsider = client.post("/api/v1/retrieval", json={"query": "payroll"}, headers=entra())
-    insider = client.post(
-        "/api/v1/retrieval", json={"query": "payroll"}, headers=entra(groups=["grp-hr"])
-    )
+    def sources(headers):
+        response = client.post("/api/v1/retrieval", json={"query": "payroll"}, headers=headers)
+        return {r["source"] for r in response.json()["results"]}
 
-    assert {r["source"] for r in outsider.json()["results"]} == {"upload://pub.md"}
-    assert {r["source"] for r in insider.json()["results"]} == {"upload://hr.md", "upload://pub.md"}
+    assert sources(gateway(user_id="bob")) == {"upload://pub.md"}
+    assert sources(gateway(user_id="alice")) == {"upload://mine.md", "upload://pub.md"}
+    assert sources(gateway(user_id="bob", account_id="ACC-hr")) == {
+        "upload://hr.md",
+        "upload://pub.md",
+    }
+    # Admin is a gate for endpoints, not an ACL bypass.
+    assert sources(gateway(user_id="bob", is_admin=True)) == {"upload://pub.md"}
 
 
-def test_invalid_or_missing_tokens_are_rejected(client, entra):
+def test_missing_gateway_identity_is_rejected(client, gateway):
     assert client.post("/api/v1/retrieval", json={"query": "q"}).status_code == 401
-    bad_audience = entra(audience="api://someone-else")
-    assert (
-        client.post("/api/v1/retrieval", json={"query": "q"}, headers=bad_audience).status_code
-        == 401
-    )
-    expired = entra(expires_in=-120)
-    assert client.post("/api/v1/retrieval", json={"query": "q"}, headers=expired).status_code == 401
+    # Other identity headers without X-User-ID do not make a caller.
+    partial = {"X-User-Email": "u@corp.org", "X-Account-ID": "ACC-1", "X-Is-Admin": "true"}
+    assert client.post("/api/v1/retrieval", json={"query": "q"}, headers=partial).status_code == 401
+    blank = {"X-User-ID": "   "}
+    assert client.post("/api/v1/retrieval", json={"query": "q"}, headers=blank).status_code == 401
+    # A bearer token alone is not validated here, so it is not an identity either.
+    bearer = {"Authorization": "Bearer anything"}
+    assert client.post("/api/v1/retrieval", json={"query": "q"}, headers=bearer).status_code == 401
     assert client.get("/api/v1/health").status_code == 200  # probes stay open
 
 
-def test_ingestion_role_is_required_when_configured(client, entra, monkeypatch):
-    monkeypatch.setattr(get_settings(), "ingestion_required_role", "Ingestion.Write")
-    assert _upload(client, "a.md", "text", headers=entra()).status_code == 403
-    assert (
-        _upload(client, "a.md", "text", headers=entra(roles=["Ingestion.Write"])).status_code == 200
+def test_ingestion_needs_admin_only_when_configured(client, gateway, monkeypatch):
+    # Default: any signed-in user may ingest.
+    assert _upload(client, "a.md", "text", headers=gateway()).status_code == 200
+
+    monkeypatch.setattr(get_settings(), "ingestion_requires_admin", True)
+    assert _upload(client, "a.md", "text", headers=gateway()).status_code == 403
+    assert _upload(client, "a.md", "text", headers=gateway(is_admin=True)).status_code == 200
+    gone = client.delete(
+        "/api/v1/ingestion/sources", params={"source": "upload://a.md"}, headers=gateway()
     )
+    assert gone.status_code == 403
 
 
-def test_api_key_callers_get_configured_principals(client, monkeypatch):
-    settings = get_settings()
-    monkeypatch.setattr(settings, "auth_mode", "api_key")
-    monkeypatch.setattr(settings, "api_key", SecretStr("k"))
-    headers = {"X-API-Key": "k"}
-    _upload(client, "restricted.md", "Board minutes", "grp-board", headers)
-
-    results = client.post("/api/v1/retrieval", json={"query": "Board minutes"}, headers=headers)
-    assert results.json()["results"] == []  # default API_KEY_PRINCIPALS = ["*"]
-
-    monkeypatch.setattr(settings, "api_key_principals", ["*", "grp-board"])
-    results = client.post("/api/v1/retrieval", json={"query": "Board minutes"}, headers=headers)
+def test_auth_mode_none_does_not_enforce_acls(client):
+    # Local development only: the anonymous caller sees everything.
+    _upload(client, "restricted.md", "Board minutes", "grp-board")
+    results = client.post("/api/v1/retrieval", json={"query": "Board minutes"})
     assert [r["source"] for r in results.json()["results"]] == ["upload://restricted.md"]
 
 

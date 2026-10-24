@@ -1,5 +1,6 @@
 """Admin RAG studio (role-gated): what the deployment can do, and scored test runs that
-compare RAG modes, vector stores and answer models on fresh (uncached) answers."""
+compare RAG modes and vector stores on fresh (uncached) answers. The LLM gateway picks the
+model, so the only answer "model" offered is the gateway itself."""
 
 import asyncio
 import json
@@ -31,7 +32,7 @@ from app.rag.evaluation.harness import (
     response_metrics,
     score_correctness,
 )
-from app.rag.generation.llm_client import ChatClient, answer_model
+from app.rag.generation.llm_client import ChatClient
 from app.rag.vectorstore.base import VectorStore
 from app.rag.vectorstore.factory import vector_stores
 
@@ -63,17 +64,16 @@ def _golden_set(path: str) -> list[AdminGoldenCase]:
     return cases
 
 
+GATEWAY_MODEL = "llm-gateway"
+
+
 def _models(settings: Settings) -> dict[str, str]:
     models = {
-        "answer": settings.azure_openai_chat_deployment,
-        "utility": settings.utility_deployment,
-        "embedding": f"{settings.azure_openai_embedding_deployment} "
-        f"({settings.embedding_dimensions}d)",
-        "judge": settings.utility_deployment if settings.quality_judge != "off" else "off",
+        "answer": GATEWAY_MODEL,
+        "utility": GATEWAY_MODEL,
+        "embedding": f"{GATEWAY_MODEL} ({settings.embedding_dimensions}d)",
+        "judge": GATEWAY_MODEL if settings.quality_judge != "off" else "off",
         "reranker": settings.reranker_model if settings.reranker == "cohere" else settings.reranker,
-        "fallback": settings.azure_openai_fallback_chat_deployment,
-        "vision": settings.azure_openai_vision_deployment,
-        "whisper": settings.azure_openai_whisper_deployment,
     }
     return {k: v for k, v in models.items() if v}
 
@@ -91,8 +91,8 @@ async def rag_config(
             vector_stores=list(retrieval_service.vector_backends),
             default_vector_store=retrieval_service.default_vector_backend,
         ),
-        answer_models=settings.answer_models,
-        default_answer_model=settings.azure_openai_chat_deployment,
+        answer_models=[GATEWAY_MODEL],
+        default_answer_model=GATEWAY_MODEL,
         models=_models(settings),
         retrieval={
             "top_k": settings.retrieval_top_k,
@@ -171,11 +171,10 @@ async def evaluate(
     Bypasses the answer cache (a cached answer would hide the model / mode under test) and
     honours `rag_mode` even when RAG_ALLOW_MODE_OVERRIDE is off, so admins can compare.
     """
-    model = request.model or settings.azure_openai_chat_deployment
-    if model not in settings.answer_models:
+    model = request.model or GATEWAY_MODEL
+    if model != GATEWAY_MODEL:
         raise HTTPException(
-            422,
-            f"Model '{model}' is not selectable (RAG_SELECTABLE_MODELS)",
+            422, f"Model '{model}' is not selectable: the LLM gateway picks the model"
         )
     top_k = request.top_k or settings.retrieval_top_k
     chat_request = ChatRequest(
@@ -189,10 +188,9 @@ async def evaluate(
         filters=request.filters,
     )
     started = time.perf_counter()
-    with answer_model(model):
-        response = await retrieval_service.chat(
-            chat_request, user, top_k, use_cache=False, force_mode=True
-        )
+    response = await retrieval_service.chat(
+        chat_request, user, top_k, use_cache=False, force_mode=True
+    )
     latency_ms = (time.perf_counter() - started) * 1000
 
     case = GoldenCase(

@@ -1,9 +1,6 @@
 import json
 
 import pytest
-from pydantic import SecretStr
-
-from app.core.config import get_settings
 
 
 def test_health_endpoint_returns_ok(client):
@@ -106,7 +103,8 @@ def test_upload_path_cannot_escape_with_dot_dot(client):
     [
         ("deck.pptx", b"PK\x03\x04 not really", "Unsupported file type .pptx"),
         ("tool.pdf", b"MZ\x90\x00 executable", "does not match the .pdf"),
-        ("photo.png", b"\xff\xd8\xff\xe0 a jpeg", "does not match the .png"),
+        ("notes.md", b"%PDF-1.7 a pdf", "does not match the .md"),
+        ("photo.png", b"\x89PNG\r\n\x1a\n", "Unsupported file type .png"),  # no image OCR
     ],
 )
 def test_upload_rejects_disallowed_or_mismatched_types(client, name, content, reason):
@@ -141,12 +139,9 @@ def test_chat_stream_emits_sse_events(client):
     assert events[-1] == "done"
 
 
-def test_api_key_is_enforced_when_configured(client, monkeypatch):
-    monkeypatch.setattr(get_settings(), "auth_mode", "api_key")
-    monkeypatch.setattr(get_settings(), "api_key", SecretStr("s3cret"))
-
+def test_gateway_identity_is_required_when_configured(client, gateway):
     assert client.post("/api/v1/retrieval", json={"query": "q"}).status_code == 401
-    ok = client.post("/api/v1/retrieval", json={"query": "q"}, headers={"X-API-Key": "s3cret"})
+    ok = client.post("/api/v1/retrieval", json={"query": "q"}, headers=gateway())
     assert ok.status_code == 200
     # Health probes stay open for the platform.
     assert client.get("/api/v1/health").status_code == 200

@@ -1,69 +1,71 @@
-from openai import APIConnectionError, APITimeoutError, RateLimitError
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+import httpx
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from app.core.azure_auth import build_openai_client
 from app.core.exceptions import EmbeddingError
-from app.core.usage import record_usage
+from app.rag.generation.llm_gateway_sdk import GatewayError, RemoteLLMClient
 
-# Only transient failures are retried; 4xx errors (bad input, auth) fail fast.
-_TRANSIENT_ERRORS = (RateLimitError, APIConnectionError, APITimeoutError)
+
+def _transient(exc: BaseException) -> bool:
+    """Retry only what may succeed next time: network errors, throttling, gateway 5xx.
+    4xx errors (bad input, auth) fail fast."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return isinstance(exc, GatewayError) and (exc.status_code == 429 or exc.status_code >= 500)
 
 
 class EmbeddingClient:
-    """Thin async wrapper around Azure OpenAI embeddings with batching and retries."""
+    """Embeddings through the LLM gateway (POST /v1/embeddings) with batching and retries.
+
+    The gateway owns the embedding model (LLM_EMBEDDING_* on the gateway); `dimensions`
+    must match it, because the Atlas vector index is created with that size. A mismatch
+    fails loudly here instead of silently corrupting the index."""
 
     def __init__(
         self,
-        endpoint: str,
-        api_key: str,
-        api_version: str,
-        deployment: str,
+        client: RemoteLLMClient,
         batch_size: int = 64,
         dimensions: int | None = None,
+        caller: str = "knowledge-service",
     ) -> None:
-        if not endpoint:
-            raise EmbeddingError("Azure OpenAI endpoint is not configured")
-        self._client = build_openai_client(endpoint, api_key, api_version)
-        self._deployment = deployment
+        self._client = client
         self._batch_size = batch_size
         self._dimensions = dimensions
+        self._caller = f"{caller}:embedding"
 
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
+    async def embed_batch(
+        self, texts: list[str], input_type: str = "document"
+    ) -> list[list[float]]:
         """Embed any number of texts, splitting into API-sized batches."""
         embeddings: list[list[float]] = []
         for start in range(0, len(texts), self._batch_size):
             try:
-                batch = await self._embed_once(texts[start : start + self._batch_size])
-            except _TRANSIENT_ERRORS as exc:
+                batch = await self._embed_once(texts[start : start + self._batch_size], input_type)
+            except (httpx.HTTPError, GatewayError) as exc:
                 raise EmbeddingError(f"Embedding request failed after retries: {exc}") from exc
             embeddings.extend(batch)
         return embeddings
 
     async def embed_text(self, text: str) -> list[float]:
-        embeddings = await self.embed_batch([text])
+        """A single search string (embedded as a query for asymmetric models)."""
+        embeddings = await self.embed_batch([text], input_type="query")
         return embeddings[0]
 
     @retry(
-        retry=retry_if_exception_type(_TRANSIENT_ERRORS),
+        retry=retry_if_exception(_transient),
         stop=stop_after_attempt(5),
         wait=wait_exponential(multiplier=1, min=1, max=30),
         reraise=True,
     )
-    async def _embed_once(self, texts: list[str]) -> list[list[float]]:
+    async def _embed_once(self, texts: list[str], input_type: str) -> list[list[float]]:
         if not texts:
             return []
-        kwargs = {"dimensions": self._dimensions} if self._dimensions else {}
-        try:
-            response = await self._client.embeddings.create(
-                model=self._deployment, input=texts, **kwargs
+        vectors = await self._client.embed(texts, input_type=input_type, caller=self._caller)
+        if self._dimensions and vectors and len(vectors[0]) != self._dimensions:
+            raise EmbeddingError(
+                f"The gateway's embedding model returns {len(vectors[0])} dimensions but "
+                f"EMBEDDING_DIMENSIONS={self._dimensions}; set them to match"
             )
-        except _TRANSIENT_ERRORS:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            raise EmbeddingError(f"Embedding request failed: {exc}") from exc
-        if response.usage is not None:
-            record_usage("embedding", self._deployment, response.usage.prompt_tokens or 0, 0)
-        return [item.embedding for item in response.data]
+        return vectors
 
 
 class EmbeddingCache:
@@ -71,7 +73,7 @@ class EmbeddingCache:
 
     In-process LRU, plus Redis (REDIS_URL) so all instances/workers share it. Keys include
     the model and dimensions, so changing the embedding model never serves stale vectors
-    (C-130). Azure OpenAI embeddings are already unit-normalised (C-128)."""
+    (C-130)."""
 
     def __init__(
         self, inner, model_key: str, max_entries: int = 50_000, redis_url: str = ""

@@ -1,9 +1,6 @@
-import logging
-
 import pytest
 
 from app.core.config import RagMode
-from app.core.logging import StructlogToOtelHandler
 from app.core.usage import record_usage, track_usage
 from app.models.schemas import JudgeScores
 from app.rag.evaluation.judge import AnswerJudge
@@ -100,7 +97,7 @@ async def test_judge_scores_are_clamped(chat_client):
     assert (scores.groundedness, scores.answer_relevance, scores.context_relevance) == (5, 1, 1)
 
 
-# -- usage & logging plumbing -------------------------------------------------------------------
+# -- usage plumbing -------------------------------------------------------------------
 def test_usage_tracker_accumulates_per_request():
     with track_usage() as usage:
         record_usage("answer", "gpt-4o", 100, 20)
@@ -109,25 +106,6 @@ def test_usage_tracker_accumulates_per_request():
 
     assert (usage.prompt_tokens, usage.completion_tokens, usage.llm_calls) == (150, 30, 2)
     assert usage.by_purpose == {"answer": 120, "quality_judge": 60}
-
-
-def test_structlog_records_become_otel_message_and_attributes():
-    captured: list[logging.LogRecord] = []
-
-    class Capture(logging.Handler):
-        def emit(self, record):
-            captured.append(record)
-
-    event = {"event": "rag_answer", "level": "info", "rag_mode": "graph", "scores": [1, 2]}
-    record = logging.LogRecord("app", logging.INFO, __file__, 1, event, None, None)
-
-    StructlogToOtelHandler(Capture()).handle(record)
-
-    sent = captured[0]
-    assert sent.getMessage() == "rag_answer"
-    assert sent.rag_mode == "graph"
-    assert sent.scores == "[1, 2]"
-    assert record.msg is event  # stdout handler's record left untouched
 
 
 async def test_judge_reads_long_passages_in_full():

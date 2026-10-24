@@ -1,8 +1,7 @@
 """Named source definitions (config/sources.yaml) with secret references (C-064).
 
 Values may reference secrets as:
-  ${ENV_VAR}          - environment variable / App Service setting
-  ${kv:secret-name}   - Azure Key Vault secret (AZURE_KEY_VAULT_URL, managed identity)
+  ${ENV_VAR}          - environment variable
 """
 
 import os
@@ -13,28 +12,13 @@ from typing import Any
 
 import yaml
 
-_REF = re.compile(r"\$\{(kv:)?([A-Za-z0-9_\-]+)\}")
-
-
-@lru_cache(maxsize=64)
-def _key_vault_secret(name: str) -> str:
-    from azure.keyvault.secrets import SecretClient
-
-    from app.core.azure_auth import get_sync_azure_credential
-    from app.core.config import get_settings
-
-    vault = get_settings().azure_key_vault_url
-    if not vault:
-        raise ValueError(f"${{kv:{name}}} used but AZURE_KEY_VAULT_URL is not set")
-    return SecretClient(vault, get_sync_azure_credential()).get_secret(name).value or ""
+_REF = re.compile(r"\$\{([A-Za-z0-9_\-]+)\}")
 
 
 def resolve_secrets(value: Any) -> Any:
     if isinstance(value, str):
         return _REF.sub(
-            lambda m: (
-                _key_vault_secret(m.group(2)) if m.group(1) else os.environ.get(m.group(2), "")
-            ),
+            lambda m: os.environ.get(m.group(1), ""),
             value,
         )
     if isinstance(value, dict):

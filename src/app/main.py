@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from app.api.v1.router import api_router
+from app.core.caller_context import CallerTokenMiddleware
 from app.core.config import get_settings
 from app.core.exceptions import (
     RagAgentError,
@@ -13,19 +14,14 @@ from app.core.exceptions import (
     unhandled_exception_handler,
 )
 from app.core.logging import configure_logging, get_logger
-from app.core.mongo import close_mongo_clients
 from app.core.middleware import RequestContextMiddleware
-from app.core.telemetry import configure_telemetry
+from app.core.mongo import close_mongo_clients
+from app.rag.generation.llm_gateway import aclose_llm_client
 from app.rag.graph.factory import get_graph_store
 from app.rag.vectorstore.factory import get_vector_store, vector_stores
 
 settings = get_settings()
 configure_logging(settings.log_level, mask_pii=settings.log_pii_masking)
-configure_telemetry(
-    settings.applicationinsights_connection_string.get_secret_value(),
-    service_name=settings.app_name,
-    environment=settings.app_env,
-)
 logger = get_logger(__name__)
 
 
@@ -36,7 +32,7 @@ async def lifespan(app: FastAPI):
         environment=settings.app_env,
         rag_mode=settings.rag_mode,
         enabled_modes=settings.rag_enabled_modes,
-        key_vault=bool(settings.azure_key_vault_url),
+        auth_mode=settings.auth_mode,
     )
     for error in settings.configuration_errors():
         # Don't crash-loop the container; /health/ready reports these until fixed.
@@ -62,6 +58,7 @@ async def lifespan(app: FastAPI):
     yield
     for store in stores:
         await store.close()
+    await aclose_llm_client()
     await close_mongo_clients()
     logger.info("app_shutdown")
 
@@ -83,6 +80,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(RequestContextMiddleware)
+# Carries the caller's bearer token to the LLM gateway calls made while serving the request.
+app.add_middleware(CallerTokenMiddleware)
 
 app.add_exception_handler(RagAgentError, rag_agent_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)

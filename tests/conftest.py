@@ -8,11 +8,12 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-# Tests must never reach real Azure services or MongoDB, whatever is in a developer's .env or shell.
+# Tests must never reach a real LLM gateway or MongoDB, whatever is in a developer's .env or shell.
 _PREFIXES = (
     "AZURE_", "GRAPH_", "RAG_", "INGESTION_", "API_KEY", "APPLICATIONINSIGHTS", "AUTH_",
     "ENTRA_", "CONTENT_SAFETY", "RERANKER", "COSMOS_", "REDIS_", "ANSWER_CACHE", "QUALITY_",
-    "SEMANTIC_", "CONVERSATION_", "PROMPT_", "VECTOR_", "MONGODB_", "MANIFEST_",
+    "SEMANTIC_", "CONVERSATION_", "PROMPT_", "VECTOR_", "MONGODB_", "MANIFEST_", "LLM_",
+    "API_GATEWAY", "ADMIN_",
 )  # fmt: skip
 for var in list(os.environ):
     if var.startswith(_PREFIXES):
@@ -22,11 +23,11 @@ os.environ.update(
         "APP_ENV": "test",
         "APP_ENV_FILE": "__tests_do_not_read_dotenv__",
         # Dummy endpoints so config validation passes; every client is a fake below.
-        "AZURE_OPENAI_ENDPOINT": "https://test.openai.azure.com",
+        "LLM_GATEWAY_URL": "http://llm-gateway.test.invalid",
         "MONGODB_URL": "mongodb://test.invalid:27017",
         "RAG_ENABLED_MODES": "semantic",
         # The upload tests use small Markdown files; the default list has no .md.
-        "INGESTION_UPLOAD_EXTENSIONS": ".pdf,.docx,.xlsx,.txt,.json,.xml,.png,.jpg,.jpeg,.md",
+        "INGESTION_UPLOAD_EXTENSIONS": ".pdf,.docx,.xlsx,.txt,.json,.xml,.md",
         "RATE_LIMIT_PER_MINUTE": "0",
     }
 )

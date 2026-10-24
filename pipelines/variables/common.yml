@@ -1,8 +1,0 @@
-# Shared, non-secret pipeline settings.
-# Service connection names MUST be defined here (YAML variables), not in a variable group:
-# Azure DevOps resolves service connections at compile time, before group values exist.
-variables:
-  pythonVersion: "3.12"
-  imageRepository: "oissa-rag-agent"
-  containerRegistry: "oissaragagentacr.azurecr.io"
-  containerRegistryServiceConnection: "sc-acr-oissa-rag" # Docker Registry service connection

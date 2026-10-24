@@ -13,7 +13,7 @@ from app.core.auth import get_current_user, require_admin_role
 from app.core.ratelimit import enforce_rate_limit
 
 api_router = APIRouter()
-# Health probes stay unauthenticated so App Service / load balancers can reach them.
+# Health probes stay unauthenticated so load balancers can reach them.
 api_router.include_router(health.router, tags=["health"])
 
 authenticated = [Depends(get_current_user)]

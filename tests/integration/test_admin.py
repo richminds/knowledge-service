@@ -22,8 +22,10 @@ def test_config_lists_modes_models_and_golden_set(admin_client):
     body = response.json()
     settings = get_settings()
     assert set(body["modes"]["enabled"]) >= {"semantic", "graph", "agentic"}
-    assert body["answer_models"][0] == settings.azure_openai_chat_deployment
-    assert body["models"]["embedding"].startswith(settings.azure_openai_embedding_deployment)
+    # The LLM gateway picks the model, so it is the only answer "model" on offer.
+    assert body["answer_models"] == ["llm-gateway"]
+    assert body["default_answer_model"] == "llm-gateway"
+    assert body["models"]["embedding"] == f"llm-gateway ({settings.embedding_dimensions}d)"
     assert ".pdf" in body["ingestion"]["supported_extensions"]
     assert body["thresholds"]["all"]["hit"] == 0.7
     assert body["golden_set"][0]["id"] == "q1"
@@ -43,7 +45,7 @@ def test_evaluate_returns_answer_metrics_and_trace(admin_client):
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["model"] == get_settings().azure_openai_chat_deployment
+    assert body["model"] == "llm-gateway"
     assert body["top_k"] == 3
     assert body["response"]["citations"][0]["source"].endswith("leave.md")
     assert body["response"]["trace"]
@@ -81,68 +83,25 @@ def test_evaluate_overrides_mode_even_when_disabled(admin_client, retrieval_serv
     assert response.status_code == 200, response.text
 
 
-def test_admin_role_is_required_for_entra_users(admin_client, entra):
-    assert admin_client.get("/api/v1/admin/rag/config", headers=entra()).status_code == 403
-    assert (
-        admin_client.get("/api/v1/admin/rag/config", headers=entra(roles=["sa_admin"])).status_code
-        == 200
+def test_evaluate_accepts_the_gateway_model(admin_client):
+    response = admin_client.post(
+        "/api/v1/admin/rag/evaluate", json={"query": "leave", "model": "llm-gateway"}
     )
 
-
-def test_answer_model_override_is_scoped():
-    from app.rag.generation.llm_client import ChatClient, answer_model
-
-    client = ChatClient("https://example.openai.azure.com", "k", "2024-10-21", "gpt-4o")
-    with answer_model("gpt-4o-mini"):
-        assert client.answer_deployment == "gpt-4o-mini"
-    assert client.answer_deployment == "gpt-4o"
+    assert response.status_code == 200, response.text
 
 
-def _recording_client(reject_max_tokens: bool):
-    import httpx
-    from openai import BadRequestError
+def test_admin_endpoints_need_an_admin_gateway_user(admin_client, gateway, monkeypatch):
+    url = "/api/v1/admin/rag/config"
+    assert admin_client.get(url).status_code == 401
+    assert admin_client.get(url, headers=gateway()).status_code == 403
+    assert admin_client.get(url, headers=gateway(is_admin=True)).status_code == 200
+    # Only the literal "true" counts.
+    spoofed = {**gateway(), "X-Is-Admin": "yes"}
+    assert admin_client.get(url, headers=spoofed).status_code == 403
 
-    sent: list[dict] = []
-
-    class Completions:
-        async def create(self, **kwargs):
-            sent.append(kwargs)
-            if reject_max_tokens and "max_tokens" in kwargs:
-                response = httpx.Response(400, request=httpx.Request("POST", "https://x"))
-                error = BadRequestError("unsupported", response=response, body=None)
-                error.param = "max_tokens"
-                raise error
-            return "ok"
-
-    client = type("C", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
-    return client, sent
-
-
-async def test_reasoning_deployments_get_completion_token_parameters():
-    from app.rag.generation.llm_client import REASONING_TOKEN_HEADROOM, ChatClient
-
-    llm = ChatClient("https://example.openai.azure.com", "k", "2024-10-21", "gpt-5.5")
-    llm._client, sent = _recording_client(reject_max_tokens=False)
-    await llm._create("gpt-5.5", messages=[], max_tokens=300, temperature=0)
-    await llm._create("gpt-4o", messages=[], max_tokens=300, temperature=0)
-
-    assert sent[0] == {
-        "model": "gpt-5.5",
-        "messages": [],
-        "max_completion_tokens": 300 + REASONING_TOKEN_HEADROOM,
-    }
-    assert sent[1]["max_tokens"] == 300 and sent[1]["temperature"] == 0
-
-
-async def test_deployment_rejecting_max_tokens_is_learned():
-    from app.rag.generation.llm_client import ChatClient
-
-    llm = ChatClient("https://example.openai.azure.com", "k", "2024-10-21", "my-reasoner")
-    llm._client, sent = _recording_client(reject_max_tokens=True)
-    assert await llm._create("my-reasoner", messages=[], max_tokens=10, temperature=0) == "ok"
-    await llm._create("my-reasoner", messages=[], max_tokens=10)
-
-    assert [("max_tokens" in s) for s in sent] == [True, False, False]
+    monkeypatch.setattr(get_settings(), "admin_requires_admin", False)
+    assert admin_client.get(url, headers=gateway()).status_code == 200
 
 
 def test_vector_store_status_counts_each_store(admin_client):

@@ -1,8 +1,8 @@
 """Shared retrieval types used by every retriever, strategy and tool (C-022, C-023).
 
 ACL model (C-012, C-066, C-106, C-192): every chunk / graph node carries `acl`, a list of
-principal ids allowed to read it (Entra user object ids, group object ids, or "*" for
-everyone in the organisation). A caller's principals are {"*", user id, group ids}.
+principal ids allowed to read it (auth-service user ids, account ids, or "*" for
+everyone in the organisation). A caller's principals are {"*", user id, account id}.
 `RetrievalFilters.principals = None` means access control is not enforced (auth disabled,
 local development only).
 """

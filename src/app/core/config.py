@@ -1,12 +1,10 @@
 """Application settings.
 
 Where each value comes from (highest priority first):
-  1. Environment variables / App Service app settings — URLs, flags, tuning (non-secret).
-  2. Azure Key Vault (when AZURE_KEY_VAULT_URL is set) — secrets. A secret named
-     `azure-openai-api-key` fills AZURE_OPENAI_API_KEY (dashes <-> underscores).
-  3. `.env` file — local development only (never committed).
-  4. Defaults below.
-Empty values are ignored at every level, so a blank `KEY=` never masks a Key Vault secret.
+  1. Environment variables — URLs, flags, tuning and secrets.
+  2. `.env` file — local development only (never committed).
+  3. Defaults below.
+Empty values are ignored at every level, so a blank `KEY=` never masks a real value.
 """
 
 import json
@@ -16,12 +14,7 @@ from functools import lru_cache
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, Field, SecretStr, field_validator
-from pydantic_settings import (
-    BaseSettings,
-    NoDecode,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class RagMode(StrEnum):
@@ -83,38 +76,31 @@ class Settings(BaseSettings):
     # One-line description of what the assistant covers (used for out-of-scope detection).
     assistant_scope: str = ""  # TODO: e.g. "HR, finance and procurement policies"
 
-    # --- Authentication & access control (C-048, C-154, C-192) ---------------------------
-    # none | api_key | entra | entra+api_key  (none = local only; ACLs not enforced)
-    auth_mode: Literal["none", "api_key", "entra", "entra+api_key"] = "none"
-    api_key: SecretStr = SecretStr("")  # Key Vault secret: api-key
-    # Principals granted to API-key callers ("*" = documents shared with everyone).
-    api_key_principals: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
-    entra_tenant_id: str = ""  # TODO: Entra tenant (directory) id
-    # Accepted token audiences: the API app's client id and/or App ID URI (api://...).
-    entra_api_audience: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    # Entra app role required to ingest/delete content (blank = any authenticated caller).
-    ingestion_required_role: str = ""  # TODO: e.g. "Ingestion.Write"
-    # Entra app role required for the admin RAG studio (/admin/*: model and mode comparison,
-    # evaluation). Blank = any authenticated caller; API-key and local callers are trusted.
-    admin_required_role: str = "SA_Admin"
+    # --- Authentication & access control (C-048, C-154) ----------------------------------
+    # gateway - trust the identity headers the API gateway injects (X-User-ID, X-User-Email,
+    #           X-User-Name, X-Account-ID, X-Is-Admin). The gateway authenticates every request
+    #           against auth-service and strips any identity headers the caller sent; restrict
+    #           this service to the gateway at the network level. Requests without X-User-ID
+    #           get 401. Same contract as makemerich-backend and llm-gateway.
+    # none    - no authentication; ACLs are NOT enforced (local development only)
+    auth_mode: Literal["none", "gateway"] = "none"
+    # Ingestion/deletion endpoints need X-Is-Admin (gateway mode). Off = any signed-in user.
+    ingestion_requires_admin: bool = False
+    # The admin RAG studio (/admin/*: mode comparison, evaluation) needs X-Is-Admin.
+    admin_requires_admin: bool = True
     # Enforce document ACLs in every retriever (disable only for single-audience corpora).
+    # Principals are the caller's user id and account id (plus "*").
     acl_enforcement: bool = True
     # ACL applied to ingested documents that carry none ("*" = everyone in the org).
     ingestion_default_acl: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
-    # Requests per minute per user / API key (0 = unlimited). Shared across instances via Redis.
+    # Requests per minute per user (0 = unlimited). Shared across instances via Redis.
     rate_limit_per_minute: int = 60
-    redis_url: SecretStr = SecretStr("")  # rediss://:<key>@<name>.redis.cache.windows.net:6380
+    redis_url: SecretStr = SecretStr("")  # redis://:<password>@<host>:6379
 
     # --- Guardrails (C-156, C-194, C-195) -------------------------------------------------
-    content_safety_mode: Literal["off", "heuristic", "azure"] = "heuristic"
-    content_safety_endpoint: Url = ""  # https://<name>.cognitiveservices.azure.com
-    content_safety_api_key: SecretStr = SecretStr("")  # blank = managed identity
-    content_safety_severity_threshold: int = Field(default=4, ge=0, le=7)
+    content_safety_mode: Literal["off", "heuristic"] = "heuristic"
     block_output_pii: bool = True
     log_pii_masking: bool = True
-
-    # --- Secrets source ----------------------------------------------------------------
-    azure_key_vault_url: Url = ""  # e.g. https://kv-oissarag-qa.vault.azure.net
 
     # --- RAG mode switch -----------------------------------------------------------------
     # Default strategy for requests that don't name one.
@@ -142,7 +128,6 @@ class Settings(BaseSettings):
     rag_max_escalations: int = Field(default=1, ge=0, le=2)
 
     # --- Observability -------------------------------------------------------------------
-    applicationinsights_connection_string: SecretStr = SecretStr("")
     # Log the user's question text with each answer (off by default: may contain PII).
     log_question_text: bool = False
 
@@ -157,24 +142,25 @@ class Settings(BaseSettings):
     # Characters of each passage the judge reads; keep >= the longest context (parent sections)
     quality_judge_max_passage_chars: int = Field(default=8000, ge=500, le=50000)
 
-    # --- Azure OpenAI (empty key => Managed Identity / az login) -------------------------
-    azure_openai_endpoint: Url = ""  # https://<name>.openai.azure.com
-    azure_openai_api_key: SecretStr = SecretStr("")  # Key Vault: azure-openai-api-key
-    azure_openai_api_version: str = "2024-10-21"
-    azure_openai_chat_deployment: str = "gpt-4o"
-    # Cheaper model for routing/grading/extraction; falls back to the chat deployment.
-    azure_openai_utility_deployment: str = ""
-    # Answer deployments the admin playground may pick (comma-separated; same Azure OpenAI
-    # resource). Blank = the chat, utility and fallback deployments.
-    rag_selectable_models: Annotated[list[str], NoDecode] = Field(default_factory=list)
-    azure_openai_embedding_deployment: str = "text-embedding-3-large"
-    embedding_dimensions: int = 3072
+    # --- LLM gateway ----------------------------------------------------------------------
+    # Every chat and embedding call goes to the LLM gateway, as the user making the request
+    # (their bearer token is forwarded). Which model answers, and what happens when it fails,
+    # is the gateway's configuration. See app/rag/generation/llm_gateway.py.
+    api_gateway_url: Url = ""  # e.g. http://localhost:8000; LLM calls go to <this>/api/llm
+    llm_gateway_url: Url = ""  # direct llm-gateway URL; overrides API_GATEWAY_URL + /api/llm
+    # Service key (X-API-Key) for calls made with no caller token: CLI ingestion, scripts,
+    # AUTH_MODE=none. Blank = such calls are refused by the gateway.
+    llm_gateway_api_key: SecretStr = SecretStr("")
+    llm_caller: str = "knowledge-service"  # caller name in the gateway's per-caller stats
+    llm_timeout_seconds: float = Field(default=120.0, gt=0)
+    # Must match the gateway's embedding model: the Atlas vector index is built with it.
+    embedding_dimensions: int = 1536  # llm-gateway default: text-embedding-3-small
     embedding_batch_size: int = 64
     generation_temperature: float = 0.1
     generation_max_tokens: int = 1024
 
     # --- MongoDB Atlas: chunks (vector + keyword search), knowledge graph, manifest --------
-    # mongodb+srv://user:pass@cluster/... (Key Vault: mongodb-url). Vector and keyword search
+    # mongodb+srv://user:pass@cluster/... Vector and keyword search
     # use Atlas Search indexes, created on startup (MONGODB_CREATE_INDEXES_ON_STARTUP).
     mongodb_url: SecretStr = SecretStr("")
     mongodb_database: str = Field(default="knowledge", pattern=r"^[A-Za-z0-9_\-]{1,63}$")
@@ -198,9 +184,7 @@ class Settings(BaseSettings):
     # --- Graph RAG: graph collections in the MongoDB database above -----------------------
     graph_store_provider: Literal["mongo"] = "mongo"
     # Collections <prefix>_chunks / _entities / _relations / _claims / _sections / _documents
-    mongodb_graph_prefix: str = Field(
-        default="rag_graph", pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,40}$"
-    )
+    mongodb_graph_prefix: str = Field(default="rag_graph", pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,40}$")
     mongodb_entity_vector_index: str = "rag_graph_entities_vector"  # entity linking (G-25)
     graph_create_schema_on_startup: bool = True
     graph_max_hops: int = Field(default=2, ge=1, le=3)
@@ -261,16 +245,13 @@ class Settings(BaseSettings):
     web_search_api_key: SecretStr = SecretStr("")
 
     # --- Source documents ----------------------------------------------------------------
-    azure_storage_connection_string: SecretStr = SecretStr("")  # Key Vault (optional)
-    azure_storage_account_url: Url = ""  # https://<account>.blob.core.windows.net
-    azure_storage_container: str = "documents"
     ingestion_local_root: str = "./data"
     ingestion_max_upload_mb: int = 50
     # File types the upload endpoint / RAG Studio accept (checked by extension and content).
     # Any of the parser's SUPPORTED_EXTENSIONS may be added.
     ingestion_upload_extensions: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
-            ".pdf", ".docx", ".xlsx", ".txt", ".json", ".xml", ".png", ".jpg", ".jpeg",
+            ".pdf", ".docx", ".xlsx", ".txt", ".json", ".xml",
         ]
     )  # fmt: skip
     # Which stores ingestion writes to by default ("graph" runs LLM entity extraction).
@@ -279,21 +260,13 @@ class Settings(BaseSettings):
     )
     ingestion_document_concurrency: int = 4
     ingestion_default_collection: str = "default"
-    # Queue-driven ingestion (scripts/ingestion_worker.py). Blank = API/CLI ingestion only.
-    servicebus_namespace: str = ""  # TODO: <name>.servicebus.windows.net
-    servicebus_connection_string: SecretStr = SecretStr("")  # alternative to managed identity
-    ingestion_queue_name: str = "ingestion"
 
     # --- Connectors (A4) — blank = connector disabled ---------------------------------------
     sources_config_path: str = "config/sources.yaml"  # db:// and api:// definitions
     acl_mapping_path: str = "config/acl_mapping.yaml"
-    sharepoint_tenant_id: str = ""  # TODO
-    sharepoint_client_id: str = ""  # TODO: app registration with Sites.Selected
-    sharepoint_client_secret: SecretStr = SecretStr("")  # Key Vault: sharepoint-client-secret
-    sharepoint_use_managed_identity: bool = False
     confluence_base_url: Url = ""  # TODO: https://<org>.atlassian.net/wiki
     confluence_user: str = ""
-    confluence_api_token: SecretStr = SecretStr("")  # Key Vault: confluence-api-token
+    confluence_api_token: SecretStr = SecretStr("")
     confluence_default_acl: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
     web_crawl_enabled: bool = False
     web_crawl_max_depth: int = 2
@@ -302,30 +275,9 @@ class Settings(BaseSettings):
     web_crawl_auth_header: SecretStr = SecretStr("")  # e.g. "Authorization: Bearer ..."
 
     # --- Parsing (A5) ------------------------------------------------------------------------
-    pdf_parser: Literal["auto", "native", "docintel"] = "auto"  # auto = docintel if configured
-    doc_intelligence_endpoint: Url = ""  # TODO: https://<name>.cognitiveservices.azure.com
-    doc_intelligence_api_key: SecretStr = SecretStr("")  # blank = managed identity
-    # Images (C-075, C-078). Document Intelligence reads text (OCR) from PNG, JPEG, BMP, TIFF and
-    # HEIF; the vision deployment describes PNG, JPEG, GIF and WebP (photos, diagrams, charts).
-    #   auto             OCR when supported; add a vision description when OCR finds little text
-    #                    or the format is vision-only
-    #   docintel         OCR only        vision    description only
-    #   docintel+vision  both            off       images are not ingested
-    image_parser: Literal["auto", "docintel", "vision", "docintel+vision", "off"] = "auto"
-    # TODO: prebuilt-read (OCR text only, cheaper) or prebuilt-layout (also tables, headings,
-    # figures). PDFs always use prebuilt-layout.
-    doc_intelligence_image_model: str = "prebuilt-layout"
-    # Below this many OCR characters an image is treated as a picture rather than a scan.
-    image_min_ocr_chars: int = Field(default=30, ge=0)
-    azure_openai_vision_deployment: str = ""  # describe images/figures (C-078), e.g. gpt-4o
-    vision_max_tokens: int = Field(default=1500, ge=200, le=8000)  # per image description
-    # PDFs parsed natively (no Document Intelligence): describe their embedded images with the
-    # vision deployment - diagrams and charts on text pages, and image-only (scanned) pages.
-    pdf_image_descriptions: bool = True
-    pdf_image_min_pixels: int = Field(default=150, ge=16)  # shorter side; skips icons and logos
-    pdf_max_images: int = Field(default=30, ge=0)  # per document; 0 = none
-    vision_concurrency: int = Field(default=4, ge=1, le=16)  # images described at once
-    azure_openai_whisper_deployment: str = ""  # transcribe audio/video (C-082)
+    # PDFs are parsed natively (pypdf): text only. Images and audio/video are not ingested:
+    # the LLM gateway takes text-only messages, so there is no vision or speech model.
+    pdf_parser: Literal["native"] = "native"
 
     # --- Cleaning & governance (A6) --------------------------------------------------------------
     ingestion_max_file_mb: int = 100
@@ -335,12 +287,8 @@ class Settings(BaseSettings):
         "confidential"
     )
     ingestion_injection_action: Literal["quarantine", "flag"] = "quarantine"
-    pii_mode: Literal["off", "regex", "azure_language"] = "off"
+    pii_mode: Literal["off", "regex"] = "off"
     pii_action: Literal["mask", "flag"] = "mask"
-    language_endpoint: Url = (
-        ""  # Azure AI Language (PII): https://<name>.cognitiveservices.azure.com
-    )
-    language_api_key: SecretStr = SecretStr("")
     retention_max_age_days: int = 0  # 0 = keep everything
     near_duplicate_threshold: float = Field(default=0.9, ge=0.5, le=1.0)
     metadata_rules_path: str = "config/metadata_rules.yaml"
@@ -359,10 +307,8 @@ class Settings(BaseSettings):
     # --- Ingestion bookkeeping (A10) -------------------------------------------------------------
     manifest_store: Literal["memory", "mongo"] = "memory"
     manifest_collection: str = "rag_ingestion_manifest"  # in MONGODB_DATABASE
-    zones_store: Literal["off", "local", "blob"] = "local"
+    zones_store: Literal["off", "local"] = "local"
     zones_local_root: str = ".ragdata"
-    data_lake_account_url: Url = ""  # TODO: https://<account>.blob.core.windows.net
-    data_lake_container: str = "rag-zones"
 
     # --- Retrieval / chunking tuning -----------------------------------------------------
     retrieval_top_k: int = 8
@@ -402,7 +348,7 @@ class Settings(BaseSettings):
 
     # --- Reranking & context assembly (A12) ---------------------------------------------------
     reranker: Literal["none", "llm", "cohere"] = "none"
-    reranker_endpoint: Url = ""  # Cohere rerank endpoint (Azure AI Foundry serverless)
+    reranker_endpoint: Url = ""  # Cohere-compatible rerank endpoint
     reranker_api_key: SecretStr = SecretStr("")
     reranker_model: str = "rerank-v3.5"
     context_max_tokens: int = 6000
@@ -415,18 +361,12 @@ class Settings(BaseSettings):
     # --- Generation (A13) ---------------------------------------------------------------------
     # Prompt version per prompt name, e.g. {"rag_answer": "v2"} (JSON).
     prompt_versions: dict[str, str] = Field(default_factory=dict)
-    # Secondary model for failover (C-190): another region / resource. Blank = no failover.
-    azure_openai_fallback_endpoint: Url = ""
-    azure_openai_fallback_api_key: SecretStr = SecretStr("")
-    azure_openai_fallback_chat_deployment: str = ""
 
     # --- Conversations (C-157, C-191) ---------------------------------------------------------
-    conversation_store: Literal["memory", "cosmos"] = "memory"
+    # memory (per process) | mongo (MONGODB_URL / MONGODB_DATABASE)
+    conversation_store: Literal["memory", "mongo"] = "memory"
     conversation_max_turns: int = 6
-    cosmos_endpoint: Url = ""  # https://<account>.documents.azure.com:443/
-    cosmos_key: SecretStr = SecretStr("")  # blank = managed identity
-    cosmos_database: str = "rag"
-    cosmos_conversation_container: str = "conversations"
+    mongodb_conversations_collection: str = "rag_conversations"
 
     # --- Answer cache (C-165) -----------------------------------------------------------------
     answer_cache_enabled: bool = False
@@ -437,7 +377,7 @@ class Settings(BaseSettings):
     eval_golden_set_path: str = "evals/golden_set.jsonl"
     eval_thresholds_path: str = "evals/thresholds.yaml"
 
-    # Allow comma-separated lists in env vars / App Service settings.
+    # Allow comma-separated lists in env vars.
     @field_validator(
         "cors_allow_origins",
         "rag_enabled_modes",
@@ -445,13 +385,10 @@ class Settings(BaseSettings):
         "agentic_tools",
         "ingestion_targets",
         "ingestion_upload_extensions",
-        "api_key_principals",
-        "entra_api_audience",
         "ingestion_default_acl",
         "doc_types",
         "confluence_default_acl",
         "graph_community_acl_scope",
-        "rag_selectable_models",
         mode="before",
     )
     @classmethod
@@ -470,19 +407,6 @@ class Settings(BaseSettings):
         return normalised
 
     # ----------------------------------------------------------------------------------
-    @property
-    def utility_deployment(self) -> str:
-        return self.azure_openai_utility_deployment or self.azure_openai_chat_deployment
-
-    @property
-    def answer_models(self) -> list[str]:
-        """Deployments the admin playground may generate answers with (chat first)."""
-        configured = self.rag_selectable_models or [
-            self.azure_openai_utility_deployment,
-            self.azure_openai_fallback_chat_deployment,
-        ]
-        return list(dict.fromkeys(m for m in [self.azure_openai_chat_deployment, *configured] if m))
-
     @property
     def active_vector_providers(self) -> list[VectorProvider]:
         """Stores ingestion writes to, default first."""
@@ -524,61 +448,20 @@ class Settings(BaseSettings):
             errors.append(f"RAG_MODE={self.rag_mode} is not in RAG_ENABLED_MODES")
         if RagMode.AUTO in self.rag_enabled_modes:
             errors.append("RAG_ENABLED_MODES lists real modes only; use RAG_MODE=auto to route")
-        if not self.azure_openai_endpoint:
-            errors.append("AZURE_OPENAI_ENDPOINT is required")
+        if not (self.llm_gateway_url or self.api_gateway_url):
+            errors.append("API_GATEWAY_URL (or LLM_GATEWAY_URL) is required for LLM calls")
         mongo = bool(self.mongodb_url.get_secret_value())
         if self.vector_enabled and not self.vector_store_configured:
             errors.append("MONGODB_URL is required for semantic/hybrid/agentic(vector) RAG")
         if self.graph_enabled and not mongo:
             errors.append("MONGODB_URL is required for graph RAG")
-        if "entra" in self.auth_mode and not (self.entra_tenant_id and self.entra_api_audience):
-            errors.append("ENTRA_TENANT_ID and ENTRA_API_AUDIENCE are required for Entra auth")
-        if "api_key" in self.auth_mode and not self.api_key.get_secret_value():
-            errors.append("API_KEY is required when AUTH_MODE includes api_key")
-        if self.image_parser in ("docintel", "docintel+vision") and not (
-            self.doc_intelligence_endpoint
-        ):
-            errors.append(f"IMAGE_PARSER={self.image_parser} needs DOC_INTELLIGENCE_ENDPOINT")
-        if self.image_parser in ("vision", "docintel+vision") and not (
-            self.azure_openai_vision_deployment
-        ):
-            errors.append(f"IMAGE_PARSER={self.image_parser} needs AZURE_OPENAI_VISION_DEPLOYMENT")
-        if self.content_safety_mode == "azure" and not self.content_safety_endpoint:
-            errors.append("CONTENT_SAFETY_ENDPOINT is required for CONTENT_SAFETY_MODE=azure")
         if self.reranker == "cohere" and not self.reranker_endpoint:
             errors.append("RERANKER_ENDPOINT is required for RERANKER=cohere")
         if self.manifest_store == "mongo" and not mongo:
             errors.append("MONGODB_URL is required for MANIFEST_STORE=mongo")
-        if self.zones_store == "blob" and not self.data_lake_account_url:
-            errors.append("DATA_LAKE_ACCOUNT_URL is required for ZONES_STORE=blob")
-        if self.pii_mode == "azure_language" and not self.language_endpoint:
-            errors.append("LANGUAGE_ENDPOINT is required for PII_MODE=azure_language")
-        if self.conversation_store == "cosmos" and not self.cosmos_endpoint:
-            errors.append("COSMOS_ENDPOINT is required for CONVERSATION_STORE=cosmos")
+        if self.conversation_store == "mongo" and not mongo:
+            errors.append("MONGODB_URL is required for CONVERSATION_STORE=mongo")
         return errors
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        vault_url = env_settings().get("azure_key_vault_url") or dotenv_settings().get(
-            "azure_key_vault_url"
-        )
-        if not vault_url:
-            return init_settings, env_settings, dotenv_settings, file_secret_settings
-
-        from app.core.azure_auth import get_sync_azure_credential
-        from app.core.keyvault import KeyVaultSettingsSource
-
-        key_vault = KeyVaultSettingsSource(
-            settings_cls, _url(str(vault_url)), get_sync_azure_credential()
-        )
-        return init_settings, env_settings, key_vault, dotenv_settings, file_secret_settings
 
 
 @lru_cache

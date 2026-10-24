@@ -10,9 +10,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
-import httpx
-
-from app.core.azure_auth import COGNITIVE_SERVICES_SCOPE, get_azure_credential
 from app.core.logging import get_logger
 from app.core.pii import mask_pii
 from app.rag.ingestion.models import ParsedDocument, SourceDocument
@@ -49,10 +46,8 @@ class GovernancePolicy:
     min_parse_quality: float = 0.4  # C-096 / C-088
     max_sensitivity: str = "confidential"  # C-095: anything above is quarantined
     injection_action: str = "quarantine"  # C-097: quarantine | flag
-    pii_mode: str = "off"  # C-094: off | regex | azure_language
+    pii_mode: str = "off"  # C-094: off | regex
     pii_action: str = "mask"  # mask | flag
-    pii_endpoint: str = ""  # Azure AI Language endpoint
-    pii_api_key: str = ""
     retention_max_age_days: int = 0  # C-098: 0 = no age limit
     near_duplicate_threshold: float = 0.9  # C-092
     boilerplate_patterns: list[str] = field(default_factory=list)
@@ -134,38 +129,6 @@ def check_parsed(
 class PiiMasker:
     def __init__(self, policy: GovernancePolicy) -> None:
         self._policy = policy
-        self._http = (
-            httpx.AsyncClient(timeout=30.0) if policy.pii_mode == "azure_language" else None
-        )
-
-    @staticmethod
-    async def _entra_token() -> str:
-        return (await get_azure_credential().get_token(COGNITIVE_SERVICES_SCOPE)).token
-
-    async def _azure_redact(self, text: str) -> tuple[str, int]:
-        headers = (
-            {"Ocp-Apim-Subscription-Key": self._policy.pii_api_key}
-            if self._policy.pii_api_key
-            else {"Authorization": f"Bearer {await self._entra_token()}"}
-        )
-        redacted_parts, found = [], 0
-        for start in range(0, len(text), 5000):  # service limit per document
-            response = await self._http.post(
-                f"{self._policy.pii_endpoint.rstrip('/')}/language/:analyze-text",
-                params={"api-version": "2023-04-01"},
-                headers=headers,
-                json={
-                    "kind": "PiiEntityRecognition",
-                    "analysisInput": {
-                        "documents": [{"id": "1", "text": text[start : start + 5000]}]
-                    },
-                },
-            )
-            response.raise_for_status()
-            doc = response.json()["results"]["documents"][0]
-            redacted_parts.append(doc["redactedText"])
-            found += len(doc.get("entities", []))
-        return "".join(redacted_parts), found
 
     async def apply(self, parsed: ParsedDocument) -> int:
         mode = self._policy.pii_mode
@@ -173,11 +136,8 @@ class PiiMasker:
             return 0
         found = 0
         for element in parsed.elements:
-            if mode == "azure_language" and self._http is not None:
-                masked, count = await self._azure_redact(element.text)
-            else:
-                masked = mask_pii(element.text)
-                count = int(masked != element.text)
+            masked = mask_pii(element.text)
+            count = int(masked != element.text)
             found += count
             if self._policy.pii_action == "mask":
                 element.text = masked

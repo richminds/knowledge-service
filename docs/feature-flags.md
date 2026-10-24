@@ -2,7 +2,7 @@
 
 This guide follows a question and a document through the pipeline and shows, at each step, which setting turns it on or off, what changes, and what it costs. Use it to answer "what happens if I flip this?" before you flip it.
 
-- Every flag is an environment variable, set in `.env` locally or in `infra/<env>.bicepparam` for QA and Prod. The full list with comments is in [.env.example](../.env.example), and the defaults are in [src/app/core/config.py](../src/app/core/config.py).
+- Every flag is an environment variable, set in `.env` locally or in the service's environment for QA and Prod. The full list with comments is in [.env.example](../.env.example), and the defaults are in [src/app/core/config.py](../src/app/core/config.py).
 - **Settings are read once, at startup.** After changing `.env`, restart the API. Files read per request, such as `evals/golden_set.jsonl`, don't need a restart.
 - **Ingestion flags only affect documents ingested after the change.** Re-ingest with `--force` to apply them to existing content.
 - The "Local" column shows the value in the team's local `.env` as of 13 Oct 2026. A dash means the default is used.
@@ -27,10 +27,10 @@ Each box is a step of `POST /api/v1/chat`. The flag on the right decides whether
  question
     │
     ▼
- ① input guardrail ............................ CONTENT_SAFETY_MODE   off | heuristic | azure
+ ① input guardrail ............................ CONTENT_SAFETY_MODE   off | heuristic
     │  blocked ─► answer_type "blocked"
     ▼
- ② load history ............................... CONVERSATION_STORE    memory | cosmos
+ ② load history ............................... CONVERSATION_STORE    memory | mongo
     ▼
  ③ understand the question  (LLM) ............. QUERY_ANALYSIS_ENABLED, ASSISTANT_SCOPE
     │  intent = chitchat     ─► small-talk reply, no retrieval
@@ -51,7 +51,7 @@ Each box is a step of `POST /api/v1/chat`. The flag on the right decides whether
  ⑧ assemble context ........................... RERANKER, RETRIEVAL_KNEE_CUTOFF, CONTEXT_*
     │   dedupe → rerank (LLM?) → score floor → knee cutoff → token budget → reorder
     ▼
- ⑨ generate  (LLM) ............................ PROMPT_VERSIONS, AZURE_OPENAI_FALLBACK_*
+ ⑨ generate  (LLM) ............................ PROMPT_VERSIONS, GENERATION_*
     ▼
  ⑩ output guardrail ........................... BLOCK_OUTPUT_PII, CONTENT_SAFETY_MODE
     ▼
@@ -71,8 +71,7 @@ The code for each step is listed in [workflow-execution.md, section 3](workflow-
 
 | Flag | Default | Local | On / value | Off |
 |---|---|---|---|---|
-| `CONTENT_SAFETY_MODE` | `heuristic` | `heuristic` | `heuristic`: pattern checks for injection and harmful text; no cost. `azure`: Azure Content Safety; needs `CONTENT_SAFETY_ENDPOINT`. | `off`: no checks on questions, passages or answers |
-| `CONTENT_SAFETY_SEVERITY_THRESHOLD` | `4` | — | Azure severity (0–7) at which content is blocked | — |
+| `CONTENT_SAFETY_MODE` | `heuristic` | `heuristic` | `heuristic`: pattern checks for prompt injection and leaked PII; no cost. There is no harm-category check. | `off`: no checks on questions, passages or answers |
 
 ### ③ Understanding the question
 
@@ -97,7 +96,7 @@ Keep the cache **off** while testing flags, or you'll see old answers. The playg
 | `RAG_MODE` | `semantic` | `hybrid` | Mode used when the request doesn't name one: `semantic` (vector only), `hybrid` (vector + BM25), `hybrid_graph` (hybrid + knowledge graph), `graph`, `agentic`. `auto` picks by question complexity, using `RAG_ROUTER_MAP`. |
 | `RAG_ENABLED_MODES` | `semantic` | `hybrid,agentic` | Modes this deployment builds and accepts. A request for any other mode gets a `400`. `hybrid_graph` and `graph` need the graph database. |
 | `RAG_ALLOW_MODE_OVERRIDE` | `true` | `true` | `true`: a request may set `rag_mode` and `vector_store`. `false`: always `RAG_MODE`. Admin playground runs may always choose. |
-| `RAG_ROUTER_MAP` | simple→semantic, relationship→graph, global→graph, multi_step→agentic | — | Only for `RAG_MODE=auto` |
+| `RAG_ROUTER_MAP` | simple→hybrid, relationship→graph, global→graph, multi_step→agentic | — | Only for `RAG_MODE=auto` |
 
 ### ⑥ Retrieval: semantic mode
 
@@ -147,10 +146,12 @@ Order: dedupe → rerank → score floor → knee cutoff → token budget → re
 
 | Flag | Default | Local | On / value | Off |
 |---|---|---|---|---|
-| `AZURE_OPENAI_CHAT_DEPLOYMENT` | `gpt-4o` | `gpt-5.5` | Model that writes the answer | — |
-| `AZURE_OPENAI_UTILITY_DEPLOYMENT` | chat model | `gpt-5.5` | Model for question analysis, transforms, reranking, grading and the judge | Blank: uses the chat model |
+| `API_GATEWAY_URL` | blank | *set* | Every LLM and embedding call goes to `<this>/api/llm`, carrying the caller's bearer token. The LLM gateway picks the model for answers and for question analysis, transforms, reranking, grading and the judge, and handles failover. | Blank (and no `LLM_GATEWAY_URL`): readiness fails, no LLM calls |
+| `LLM_GATEWAY_URL` | blank | — | Direct llm-gateway URL; overrides `API_GATEWAY_URL` + `/api/llm` | — |
+| `LLM_GATEWAY_API_KEY` | blank | — | Sent as `X-API-Key` when there is no caller token: CLI ingestion, scripts, `AUTH_MODE=none` | Blank: those calls are refused by the gateway |
+| `LLM_CALLER` / `LLM_TIMEOUT_SECONDS` | `knowledge-service` / `120` | — | Caller name in the gateway's per-caller stats (suffixed with the call purpose), and the per-call timeout | — |
+| `GENERATION_TEMPERATURE` / `GENERATION_MAX_TOKENS` | `0.1` / `1024` | — | Sampling temperature and answer length sent to the gateway | — |
 | `PROMPT_VERSIONS` | `{}` | — | e.g. `{"rag_answer": "v2"}` picks a prompt version from `src/app/prompts/` | Default versions |
-| `AZURE_OPENAI_FALLBACK_*` | blank | — | Backup endpoint and model when the main one errors | No failover |
 | `BLOCK_OUTPUT_PII` | `true` | — | Withholds answers containing PII that appears in neither the question nor the passages | Answers are returned as generated |
 | `QUALITY_JUDGE` | `request` | `request` | **LLM.** `request`: judges when the request sets `"evaluate": true`. `always`: every answer. | `off`: confidence from citation signals only |
 | `QUALITY_JUDGE_SAMPLE_RATE` | `0.0` | `0.0` | Share of other answers judged in the background, for dashboards only | — |
@@ -164,8 +165,9 @@ How the judge scores groundedness and how confidence is decided: [README, Answer
 |---|---|---|---|
 | `RAG_ALLOW_TRACE` | `true` | `true` | Allows `"include_trace": true` to return every step with timings. Needed by the playground's trace view. |
 | `LOG_QUESTION_TEXT` | `false` | — | Logs the question text with each answer. May contain PII. |
-| `AUTH_MODE` | `none` | `none` | `none` is local only: no sign-in, **ACLs not enforced**. QA and Prod use `entra` or `entra+api_key`. |
-| `ACL_ENFORCEMENT` | `true` | — | Filters every store query by the user's permissions |
+| `AUTH_MODE` | `none` | `none` | `none` is local only: no sign-in, **ACLs not enforced**. QA and Prod use `gateway`: identity comes from the `X-User-ID`, `X-User-Email`, `X-User-Name`, `X-Account-ID` and `X-Is-Admin` headers the API gateway injects, and a request without `X-User-ID` gets `401`. |
+| `ACL_ENFORCEMENT` | `true` | — | Filters every store query by the user's permissions: `*`, the user ID and the account ID |
+| `ADMIN_REQUIRES_ADMIN` / `INGESTION_REQUIRES_ADMIN` | `true` / `false` | — | In `gateway` mode, the admin RAG studio and the ingestion/deletion endpoints need `X-Is-Admin: true` (`403` otherwise) |
 
 ---
 
@@ -177,10 +179,9 @@ How the judge scores groundedness and how confidence is decided: [README, Answer
     ▼
  raw checks ......................... INGESTION_MAX_FILE_MB, RETENTION_MAX_AGE_DAYS
     ▼
- land raw copy ...................... ZONES_STORE              off | local (.ragdata/) | blob
+ land raw copy ...................... ZONES_STORE              off | local (.ragdata/)
     ▼
- parse .............................. PDF_PARSER, IMAGE_PARSER, DOC_INTELLIGENCE_*, AZURE_OPENAI_VISION_*
-    │  pypdf PDFs: embedded images (LLM) ... PDF_IMAGE_DESCRIPTIONS, PDF_IMAGE_MIN_PIXELS, PDF_MAX_IMAGES
+ parse .............................. PDF_PARSER               native (pypdf, text only)
     ▼
  clean & govern ..................... PII_MODE, INGESTION_INJECTION_ACTION, INGESTION_MAX_SENSITIVITY
     │  fails a check ─► quarantine (reason in the manifest)
@@ -191,7 +192,7 @@ How the judge scores groundedness and how confidence is decided: [README, Answer
     ▼
  enrich  (LLM) ...................... ENRICH_PROFILE, ENRICH_CONTEXTUAL, ENRICH_QUESTIONS, ENRICH_SUMMARIES
     ▼
- embed .............................. EMBEDDING_CACHE_ENABLED, AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+ embed .............................. EMBEDDING_CACHE_ENABLED, EMBEDDING_DIMENSIONS, EMBEDDING_BATCH_SIZE
     ▼
  write .............................. INGESTION_TARGETS        vector | graph | vector,graph
                                       VECTOR_STORE_PROVIDERS   mongo
@@ -201,14 +202,9 @@ How the judge scores groundedness and how confidence is decided: [README, Answer
 |---|---|---|---|---|
 | `INGESTION_TARGETS` | `vector` | `vector` | `graph` adds **LLM** entity and relation extraction into the MongoDB graph collections | Vector index only |
 | `MANIFEST_STORE` | `memory` | `memory` | `mongo`: document status survives restarts | `memory`: **the document list is wiped on every restart**, so `GET /ingestion/manifest` comes back empty and unchanged files are re-processed |
-| `ZONES_STORE` | `local` | `local` | Keeps raw, parsed, clean and chunk copies (`.ragdata/` locally, the `rag-zones` container in Azure) for debugging | `off`: nothing kept |
-| `PDF_PARSER` | `auto` | — | `docintel`: Document Intelligence (layout, tables, scans). `native`: pypdf text only. `auto`: Document Intelligence when configured. | — |
-| `IMAGE_PARSER` | `auto` | — | OCR and/or a vision description for images. `off`: images aren't ingested, in PDFs or as files. | — |
-| `AZURE_OPENAI_VISION_DEPLOYMENT` | blank | `gpt-5.5` | **LLM.** Describes image files, and the images inside PDFs parsed with `pypdf`: components, connections, chart values, any visible text. gpt-5.x and other reasoning models are supported. | Blank: image files fail unless Document Intelligence can OCR them, and images inside PDFs are ignored |
-| `PDF_IMAGE_DESCRIPTIONS` | `true` | — | Each diagram, chart or scanned page inside a PDF gets a `Figure (page N): …` description on its page. Only when the PDF isn't sent to Document Intelligence. | PDF images ignored; image-only pages give no text |
-| `PDF_IMAGE_MIN_PIXELS` / `PDF_MAX_IMAGES` | `150` / `30` | — | Skips images smaller than this on their shorter side (icons, logos) and repeats of the same image; describes at most this many per PDF and logs the rest as over the limit | — |
-| `VISION_CONCURRENCY` / `VISION_MAX_TOKENS` | `4` / `1500` | — | Images described at the same time, and the output length per description | — |
-| `PII_MODE` | `off` | `regex` | `regex` or `azure_language` finds PII; `PII_ACTION` masks or flags it | No PII scan |
+| `ZONES_STORE` | `local` | `local` | Keeps raw, parsed, clean and chunk copies under `ZONES_LOCAL_ROOT` (`.ragdata/`) for debugging | `off`: nothing kept |
+| `PDF_PARSER` | `native` | — | `native` is the only value: the pypdf text layer. Pictures inside PDFs are ignored and image-only (scanned) pages give no text. Image and audio/video files are not ingested. | — |
+| `PII_MODE` | `off` | `regex` | `regex` finds pattern-shaped PII such as e-mail addresses and phone numbers (not names or postal addresses); `PII_ACTION` masks or flags it | No PII scan |
 | `INGESTION_INJECTION_ACTION` | `quarantine` | — | Documents containing prompt injection are quarantined | `flag`: indexed with a warning |
 | `CHUNK_STRATEGY` | `structure` | `semantic` | `structure`: splits on headings and paragraphs. `semantic`: splits where the topic changes. | — |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `800` / `120` | `512` / `64` | Tokens per chunk, and tokens repeated between chunks | — |
@@ -225,7 +221,7 @@ How the judge scores groundedness and how confidence is decided: [README, Answer
 python scripts/ingest_cli.py --source sample/ --collection default --force
 ```
 
-Changing `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`, `EMBEDDING_DIMENSIONS` or the index schema needs a [full re-index](runbooks/reindex.md).
+Changing `EMBEDDING_DIMENSIONS`, the LLM gateway's embedding model or the index schema needs a [full re-index](runbooks/reindex.md). `EMBEDDING_DIMENSIONS` must match the gateway's embedding model.
 
 ---
 
@@ -243,7 +239,6 @@ RERANKER=none
 QUALITY_JUDGE=off
 ENRICH_CONTEXTUAL=false
 ENRICH_QUESTIONS=0
-AZURE_OPENAI_VISION_DEPLOYMENT=
 ```
 One LLM call per question (question analysis is cheap; set `QUERY_ANALYSIS_ENABLED=false` to drop it too, at the cost of follow-up rewriting).
 
@@ -256,10 +251,8 @@ RETRIEVAL_KNEE_CUTOFF=true
 RETRIEVAL_RERANK_TOP_N=8
 ENRICH_CONTEXTUAL=true
 ENRICH_QUESTIONS=3
-AZURE_OPENAI_VISION_DEPLOYMENT=gpt-5.5
-PDF_IMAGE_DESCRIPTIONS=true
 ```
-Re-ingest with `--force` after switching to it. With the vision deployment set, pictures inside PDFs add about 15–20 s each to ingestion.
+Re-ingest with `--force` after switching to it.
 
 **Evaluation and flag testing**
 ```ini
@@ -275,18 +268,18 @@ Escalation is off so each run measures one mode only. `MANIFEST_STORE=mongo` nee
 
 **Production (starting point)**
 ```ini
-AUTH_MODE=entra
+AUTH_MODE=gateway
+API_GATEWAY_URL=<API gateway URL>
 RAG_ALLOW_MODE_OVERRIDE=false
 RAG_ALLOW_TRACE=false
 QUALITY_JUDGE=request
 QUALITY_JUDGE_SAMPLE_RATE=0.05
-CONTENT_SAFETY_MODE=azure
+CONTENT_SAFETY_MODE=heuristic
 MANIFEST_STORE=mongo
-ZONES_STORE=blob
+CONVERSATION_STORE=mongo
 ASSISTANT_SCOPE=<what the assistant actually covers>
-AZURE_OPENAI_VISION_DEPLOYMENT=<vision-capable deployment, e.g. gpt-5.5>
 ```
-In Azure, these go in `infra/prod.bicepparam`. The vision deployment is `param openAiVisionDeployment`.
+Set these as the service's environment variables. `AUTH_MODE=gateway` is only safe when the service can be reached through the API gateway alone.
 
 ---
 
@@ -332,5 +325,5 @@ For a single question, use the RAG Studio **Playground**. Pick a golden-set ques
 | The manifest is empty after a restart | `MANIFEST_STORE=memory` | Use `mongo`, or re-check documents with `/retrieval` |
 | A flag change made no difference | The API wasn't restarted; or it's an ingestion flag and documents weren't re-ingested with `--force`; or the answer came from the cache | Restart, re-ingest with `--force`, set `ANSWER_CACHE_ENABLED=false` |
 | `400` "RAG mode … is not enabled" | The mode isn't in `RAG_ENABLED_MODES`, or `RAG_ALLOW_MODE_OVERRIDE=false` | Add the mode, or drop `rag_mode` from the request |
-| Questions about a diagram or scanned page get "not found" | Images inside PDFs are ignored when `AZURE_OPENAI_VISION_DEPLOYMENT` is blank or `PDF_IMAGE_DESCRIPTIONS=false` | Set the vision deployment, then re-ingest the PDF with `--force`. The `pdf_images_described` log event shows how many images were described. Diagrams drawn in the PDF (lines, text and small logos, typical of Visio and PowerPoint exports) are not described yet. See [workflow-execution.md, 2.2.1](workflow-execution.md#221-images-and-diagrams). |
+| Questions about a diagram or scanned page get "not found" | PDFs are parsed as text only: pictures inside them are ignored, and image-only pages give no text (`pages_without_text` quality flag) | Provide the content as text (a text-based PDF, or a document that describes the diagram) and re-ingest it. See [workflow-execution.md, 2.2.1](workflow-execution.md#221-images-and-diagrams). |
 | Graph questions get semantic answers | Graph mode isn't enabled, or `INGESTION_TARGETS` doesn't include `graph` so the graph is empty and `GRAPH_SEMANTIC_FALLBACK` kicks in | Enable graph mode, ingest with `--targets graph`, and run graph maintenance |

@@ -1,8 +1,6 @@
 """Connector registry: picks a connector from the source URI scheme (C-057).
 
   <path> | file://        LocalConnector       (INGESTION_LOCAL_ROOT)
-  blob://container/prefix  BlobConnector        (AZURE_STORAGE_*)
-  sharepoint://host/sites/... SharePointConnector (SHAREPOINT_*)
   confluence://SPACE        ConfluenceConnector  (CONFLUENCE_*)
   db://<name>               DatabaseConnector    (config/sources.yaml)
   api://<name>              RestApiConnector     (config/sources.yaml)

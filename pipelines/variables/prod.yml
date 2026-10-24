@@ -1,6 +1,0 @@
-variables:
-  environmentName: "prod"
-  azureServiceConnection: "sc-azure-oissa-rag-prod" # ARM service connection (workload identity federation)
-  resourceGroup: "rg-oissa-rag-prod"
-  location: "eastus2"
-  bicepParamFile: "infra/prod.bicepparam"

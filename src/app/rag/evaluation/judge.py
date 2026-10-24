@@ -1,6 +1,6 @@
 """LLM-as-judge for answer quality: groundedness, answer relevance, context relevance.
 
-One JSON call on the utility deployment. Reference-free, so it works on live traffic
+One JSON call through the LLM gateway. Reference-free, so it works on live traffic
 (no expected answer needed). Use a different / stronger model than the answering one
 for less self-preference bias when cost allows.
 """

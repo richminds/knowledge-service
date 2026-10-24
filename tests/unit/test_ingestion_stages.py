@@ -12,9 +12,7 @@ import pytest
 from app.rag.ingestion.chunking import ChunkingOptions, chunk_document, count_tokens
 from app.rag.ingestion.cleaning import clean_document, fix_mojibake, repair_lines
 from app.rag.ingestion.connectors.rest_api import RestApiConnector
-from app.rag.ingestion.connectors.sharepoint import acl_from_permissions
 from app.rag.ingestion.connectors.web import WebConnector
-from app.rag.ingestion.docintel import layout_to_document
 from app.rag.ingestion.embeddings import EmbeddingCache
 from app.rag.ingestion.enrichment import Enricher, EnrichmentOptions
 from app.rag.ingestion.filetypes import detect_type
@@ -152,71 +150,6 @@ async def test_email_and_zip_attachments_are_ingested(ingestion_pipeline, vector
 def test_python_code_is_split_by_definition():
     elements = parse_code("import os\n\ndef a():\n    return 1\n\nclass B:\n    pass\n", ".py")
     assert [e.section_path for e in elements] == [[], ["a"], ["B"]]
-
-
-def test_document_intelligence_layout_mapping():
-    result = {
-        "pages": [{}, {}],
-        "paragraphs": [
-            {
-                "role": "pageHeader",
-                "content": "ACME Corp",
-                "spans": [{"offset": 0}],
-                "boundingRegions": [{"pageNumber": 1}],
-            },
-            {
-                "role": "title",
-                "content": "Benefits",
-                "spans": [{"offset": 10}],
-                "boundingRegions": [{"pageNumber": 1}],
-            },
-            {
-                "content": "Overview text.",
-                "spans": [{"offset": 20}],
-                "boundingRegions": [{"pageNumber": 1}],
-            },
-            {
-                "content": "cell text",
-                "spans": [{"offset": 45}],
-                "boundingRegions": [{"pageNumber": 1}],
-            },
-        ],
-        "tables": [
-            {
-                "columnCount": 2,
-                "rowCount": 2,
-                "spans": [{"offset": 40, "length": 20}],
-                "boundingRegions": [{"pageNumber": 1}],
-                "cells": [
-                    {"rowIndex": 0, "columnIndex": 0, "content": "Plan", "kind": "columnHeader"},
-                    {"rowIndex": 0, "columnIndex": 1, "content": "Cost", "kind": "columnHeader"},
-                    {"rowIndex": 1, "columnIndex": 0, "content": "A"},
-                    {"rowIndex": 1, "columnIndex": 1, "content": "10"},
-                ],
-            },
-            {
-                "columnCount": 2,
-                "rowCount": 2,
-                "spans": [{"offset": 70, "length": 20}],
-                "boundingRegions": [{"pageNumber": 2}],
-                "cells": [
-                    {"rowIndex": 0, "columnIndex": 0, "content": "Plan", "kind": "columnHeader"},
-                    {"rowIndex": 0, "columnIndex": 1, "content": "Cost", "kind": "columnHeader"},
-                    {"rowIndex": 1, "columnIndex": 0, "content": "B"},
-                    {"rowIndex": 1, "columnIndex": 1, "content": "20"},
-                ],
-            },
-        ],
-    }
-    parsed = layout_to_document("x", "doc", result)
-    assert [e.type for e in parsed.elements] == [
-        "title",
-        "paragraph",
-        "table",
-    ]  # header + cell paragraph dropped
-    table = parsed.elements[2].text
-    assert "| A | 10 |" in table and "| B | 20 |" in table  # stitched across pages
-    assert parsed.elements[1].page == 1 and parsed.title == "Benefits"
 
 
 # -- cleaning & governance (A6) -------------------------------------------------------------------
@@ -448,17 +381,6 @@ async def test_zones_persist_each_stage(embedding_client, vector_store, docs_roo
 
 
 # -- connectors (A4) -------------------------------------------------------------------------------
-def test_sharepoint_permissions_to_acl():
-    permissions = [
-        {"grantedToV2": {"group": {"id": "g-1"}}},
-        {"grantedToIdentitiesV2": [{"user": {"id": "u-1"}}]},
-        {"link": {"scope": "organization"}},
-        {"grantedToV2": {"siteGroup": {"displayName": "HR Members"}}},
-        {"grantedToV2": {"siteGroup": {"displayName": "Unmapped"}}},
-    ]
-    assert acl_from_permissions(permissions, {"HR Members": "g-hr"}) == ["*", "g-1", "g-hr", "u-1"]
-
-
 async def test_rest_api_connector_paginates(tmp_path, monkeypatch):
     sources = tmp_path / "sources.yaml"
     sources.write_text(
@@ -504,32 +426,6 @@ async def test_web_crawler_respects_robots_and_host():
     crawler._http = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=True)
     urls = [d.source async for d in crawler.iterate("https://intranet.test/")]
     assert urls == ["https://intranet.test/", "https://intranet.test/a"]
-
-
-# -- queue jobs (C-032..C-035) ---------------------------------------------------------------------
-def test_queue_messages_and_event_grid_events():
-    from app.rag.ingestion.jobs import parse_message
-
-    job = parse_message('{"source_uri": "blob://docs/hr/", "collection": "hr", "full_sync": true}')[
-        0
-    ]
-    assert (job.source_uri, job.collection, job.full_sync) == ("blob://docs/hr/", "hr", True)
-
-    events = json.dumps(
-        [
-            {
-                "eventType": "Microsoft.Storage.BlobCreated",
-                "subject": "/blobServices/default/containers/docs/blobs/hr/a.pdf",
-            },
-            {
-                "eventType": "Microsoft.Storage.BlobDeleted",
-                "subject": "/blobServices/default/containers/docs/blobs/hr/b.pdf",
-            },
-        ]
-    )
-    created, deleted = parse_message(events, "default")
-    assert created.source_uri == "blob://docs/hr/a.pdf" and not created.delete
-    assert deleted.source_uri == "blob://docs/hr/b.pdf" and deleted.delete
 
 
 async def test_tuned_chunking_end_to_end(embedding_client, vector_store, chat_client):
@@ -578,7 +474,8 @@ async def test_tuned_chunking_end_to_end(embedding_client, vector_store, chat_cl
 
 
 # -- upload allow-list and folder paths ------------------------------------------------------
-UPLOAD_ALLOWED = [".pdf", ".docx", ".xlsx", ".txt", ".json", ".xml", ".png", ".jpg", ".jpeg"]
+# The default INGESTION_UPLOAD_EXTENSIONS (images are not ingested any more).
+UPLOAD_ALLOWED = [".pdf", ".docx", ".xlsx", ".txt", ".json", ".xml"]
 
 
 def _ooxml(part: str) -> bytes:
@@ -600,9 +497,7 @@ def _ooxml(part: str) -> bytes:
         ("a.txt", b"plain text"),
         ("a.json", b'{"k": 1}'),
         ("a.xml", b"<root><a>1</a></root>"),
-        ("a.png", b"\x89PNG\r\n\x1a\n...."),
-        ("a.JPG", b"\xff\xd8\xff\xe0...."),
-        ("a.jpeg", b"\xff\xd8\xff\xe0...."),
+        ("a.PDF", b"%PDF-1.7 ..."),
     ],
 )
 def test_upload_accepts_the_allowed_types(name, content):
@@ -620,7 +515,8 @@ def test_upload_accepts_the_allowed_types(name, content):
         ("a.docx", _ooxml("xl")),  # a spreadsheet renamed .docx
         ("a.txt", b"MZ\x90\x00"),  # an executable renamed .txt
         ("a.json", b"%PDF-1.7"),
-        ("a.png", b"\xff\xd8\xff\xe0"),  # a JPEG renamed .png
+        ("a.png", b"\x89PNG\r\n\x1a\n"),  # a real PNG: images are not ingested
+        ("a.jpg", b"\xff\xd8\xff\xe0"),
     ],
 )
 def test_upload_refuses_other_or_mismatched_types(name, content):
@@ -633,7 +529,7 @@ def test_upload_refuses_other_or_mismatched_types(name, content):
     ("path", "expected"),
     [
         ("Policies/HR/leave.pdf", "Policies/HR/leave.pdf"),
-        ("Policies\HR\leave.pdf", "Policies/HR/leave.pdf"),
+        (r"Policies\HR\leave.pdf", "Policies/HR/leave.pdf"),
         ("/abs/../../x/./y.pdf", "abs/x/y.pdf"),
         ("C:/Users/me/doc.pdf", "Users/me/doc.pdf"),
         ("../..", "fallback.pdf"),

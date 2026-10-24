@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 from pydantic import ValidationError
 
@@ -17,21 +15,41 @@ def test_list_settings_accept_comma_separated_and_json(monkeypatch):
 
 
 def test_urls_are_validated_and_normalised(monkeypatch):
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://x.openai.azure.com/")
-    assert Settings().azure_openai_endpoint == "https://x.openai.azure.com"
+    monkeypatch.setenv("API_GATEWAY_URL", "http://gateway.test:8000/")
+    assert Settings().api_gateway_url == "http://gateway.test:8000"
 
-    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "x.openai.azure.com")
+    monkeypatch.setenv("LLM_GATEWAY_URL", "llm-gateway.test")
     with pytest.raises(ValidationError, match="http"):
         Settings()
 
 
 def test_secrets_are_masked_in_repr(monkeypatch):
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "super-secret")
+    monkeypatch.setenv("LLM_GATEWAY_API_KEY", "super-secret")
 
     settings = Settings()
 
     assert "super-secret" not in repr(settings)
-    assert settings.azure_openai_api_key.get_secret_value() == "super-secret"
+    assert settings.llm_gateway_api_key.get_secret_value() == "super-secret"
+
+
+def test_a_gateway_url_is_required_for_llm_calls(monkeypatch):
+    monkeypatch.setenv("LLM_GATEWAY_URL", "")
+    monkeypatch.setenv("API_GATEWAY_URL", "")
+    message = "API_GATEWAY_URL (or LLM_GATEWAY_URL) is required for LLM calls"
+
+    assert message in Settings().configuration_errors()
+
+    monkeypatch.setenv("API_GATEWAY_URL", "http://gateway.test")
+    assert message not in Settings().configuration_errors()
+
+
+def test_auth_defaults_require_admin_for_the_studio_only():
+    settings = Settings()
+
+    assert settings.auth_mode == "none"
+    assert settings.admin_requires_admin and not settings.ingestion_requires_admin
+    with pytest.raises(ValidationError):
+        Settings(auth_mode="entra")
 
 
 def test_configuration_errors_reflect_enabled_modes(monkeypatch):
@@ -76,50 +94,3 @@ def test_mongodb_url_is_required_for_the_stores(monkeypatch):
 
     assert not settings.vector_store_configured
     assert "MONGODB_URL is required for MANIFEST_STORE=mongo" in settings.configuration_errors()
-
-
-class _FakeSecretClient:
-    """Mimics azure.keyvault.secrets.SecretClient for the settings source."""
-
-    secrets = {"azure-openai-api-key": "kv-openai-key", "mongodb-url": "mongodb://kv-host"}
-
-    def __init__(self, vault_url, credential):
-        self.vault_url = vault_url
-
-    def list_properties_of_secrets(self):
-        return [SimpleNamespace(name=n, enabled=True) for n in self.secrets]
-
-    def get_secret(self, name):
-        return SimpleNamespace(value=self.secrets[name])
-
-
-def test_key_vault_secrets_fill_settings_but_env_wins(monkeypatch):
-    import azure.keyvault.secrets
-
-    from app.core import azure_auth
-
-    # pydantic-settings imports SecretClient from this module when the source is built.
-    monkeypatch.setattr(azure.keyvault.secrets, "SecretClient", _FakeSecretClient)
-    monkeypatch.setattr(azure_auth, "get_sync_azure_credential", lambda: object())
-    monkeypatch.setenv("AZURE_KEY_VAULT_URL", "https://kv-test.vault.azure.net")
-    monkeypatch.setenv("MONGODB_URL", "mongodb://from-env")
-    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "")  # blank must not mask the vault value
-
-    settings = Settings()
-
-    assert settings.azure_openai_api_key.get_secret_value() == "kv-openai-key"
-    assert settings.mongodb_url.get_secret_value() == "mongodb://from-env"
-
-
-def test_mongodb_url_is_read_from_key_vault(monkeypatch):
-    import azure.keyvault.secrets
-
-    from app.core import azure_auth
-
-    monkeypatch.setattr(azure.keyvault.secrets, "SecretClient", _FakeSecretClient)
-    monkeypatch.setattr(azure_auth, "get_sync_azure_credential", lambda: object())
-    monkeypatch.setenv("AZURE_KEY_VAULT_URL", "https://kv-test.vault.azure.net")
-
-    monkeypatch.delenv("MONGODB_URL", raising=False)
-
-    assert Settings().mongodb_url.get_secret_value() == "mongodb://kv-host"

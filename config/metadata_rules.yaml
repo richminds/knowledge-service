@@ -1,5 +1,5 @@
 # Business metadata rules (C-103) — placeholders. Each rule matches the document source
-# (path, blob URI, SharePoint/Confluence URI) with a case-insensitive regex; matching rules
+# (path, Confluence/db/api/web URI) with a case-insensitive regex; matching rules
 # set fields (later rules override earlier ones) and add tags.
 # Fields: department, region, doc_type (one of DOC_TYPES), any other key -> metadata extra.
 

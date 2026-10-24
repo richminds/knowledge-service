@@ -3,15 +3,15 @@
 Native parsers keep structure: headings -> section tree (C-084), page numbers (C-085),
 tables as markdown (C-077), slides + speaker notes, spreadsheet rows with headers (C-079),
 HTML without boilerplate (C-080), code split by definitions (C-081), email/zip
-attachments recursively (C-083). PDFs and images go to Document Intelligence when
-configured (C-074..C-078); audio/video to the transcriber (C-082).
+attachments recursively (C-083). PDFs are parsed natively, text only (C-074). Images and
+audio/video are rejected: the LLM gateway takes text-only messages, so there is no OCR,
+vision or speech model to read them.
 """
 
 import ast
 import asyncio
 import csv
 import email
-import hashlib
 import io
 import json
 import re
@@ -21,7 +21,7 @@ from html.parser import HTMLParser
 
 from app.core.exceptions import DocumentLoadError
 from app.core.logging import get_logger
-from app.rag.ingestion.filetypes import IMAGE_FORMATS, detect_type, image_format
+from app.rag.ingestion.filetypes import detect_type
 from app.rag.ingestion.language import detect_language
 from app.rag.ingestion.models import Element, ParsedDocument, SourceDocument
 
@@ -35,10 +35,9 @@ MAX_ARCHIVE_MEMBERS = 500
 SUPPORTED_EXTENSIONS = [
     ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm", ".md", ".txt", ".csv", ".tsv",
     ".json", ".jsonl", ".xml", ".yaml", ".yml", ".eml", ".zip",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".heic",
-    ".mp3", ".mp4", ".m4a", ".wav", ".ogg", ".flac",
     ".py", ".js", ".ts", ".java", ".cs", ".go", ".sql", ".sh", ".ps1", ".r",
 ]  # fmt: skip
+
 
 class _Sections:
     """Tracks the heading breadcrumb while walking a document."""
@@ -390,60 +389,6 @@ def parse_pdf_native(content: bytes) -> tuple[list[Element], int, list[int]]:
     return elements, len(reader.pages), empty_pages
 
 
-_VISION_MAX_SIDE = 2048  # larger images are downscaled before sending (the model resizes anyway)
-
-
-def extract_pdf_images(
-    content: bytes, min_pixels: int, max_images: int
-) -> tuple[list[tuple[int, bytes]], int]:
-    """C-078: embedded images worth describing, as (page, PNG or JPEG bytes) in page order.
-
-    Skips images whose shorter side is under `min_pixels` (icons, bullets, logos) and repeats
-    of an image already taken (a logo in every page header). Returns the images and how many
-    more qualified beyond `max_images`.
-    """
-    from pypdf import PdfReader
-
-    reader = PdfReader(io.BytesIO(content))
-    found: list[tuple[int, bytes]] = []
-    seen: set[str] = set()
-    over_limit = 0
-    for number, page in enumerate(reader.pages, start=1):
-        try:
-            images = list(page.images)
-        except Exception as exc:  # noqa: BLE001 - one unreadable page must not fail the PDF
-            logger.warning("pdf_page_images_unreadable", page=number, error=str(exc))
-            continue
-        for image in images:
-            try:
-                picture = image.image
-                data = image.data
-            except Exception as exc:  # noqa: BLE001 - unsupported filters (JBIG2, ...)
-                logger.warning("pdf_image_unreadable", page=number, error=str(exc))
-                continue
-            if picture is None or min(picture.size) < min_pixels:
-                continue
-            digest = hashlib.sha256(data).hexdigest()
-            if digest in seen:
-                continue
-            seen.add(digest)
-            if len(found) >= max_images:
-                over_limit += 1
-                continue
-            if (
-                image_format(data) not in ("png", "jpeg")
-                or picture.mode not in ("RGB", "L")
-                or max(picture.size) > _VISION_MAX_SIDE
-            ):
-                picture = picture.convert("RGB")
-                picture.thumbnail((_VISION_MAX_SIDE, _VISION_MAX_SIDE))
-                buffer = io.BytesIO()
-                picture.save(buffer, "PNG")
-                data = buffer.getvalue()
-            found.append((number, data))
-    return found, over_limit
-
-
 # -- code (C-081) ---------------------------------------------------------------------------
 def parse_code(text: str, extension: str) -> list[Element]:
     """One element per top-level definition so functions/classes stay whole.
@@ -470,33 +415,6 @@ def parse_code(text: str, extension: str) -> list[Element]:
 
 # -- router ---------------------------------------------------------------------------------
 class ParserRouter:
-    def __init__(
-        self,
-        doc_intelligence=None,
-        vision=None,
-        transcriber=None,
-        pdf_parser: str = "auto",
-        image_parser: str = "auto",
-        image_min_ocr_chars: int = 30,
-        pdf_image_descriptions: bool = True,
-        pdf_image_min_pixels: int = 150,
-        pdf_max_images: int = 30,
-        vision_concurrency: int = 4,
-    ) -> None:
-        self._docintel = doc_intelligence
-        self._vision = vision
-        self._transcriber = transcriber
-        self._pdf_parser = pdf_parser  # native | docintel | auto (docintel when configured)
-        self._image_parser = image_parser  # see Settings.image_parser
-        self._image_min_ocr_chars = image_min_ocr_chars
-        # Images inside natively parsed PDFs go to the vision model (see _describe_pdf_images).
-        self._pdf_images = (
-            pdf_image_descriptions and vision is not None and image_parser != "off"
-        )
-        self._pdf_image_min_pixels = pdf_image_min_pixels
-        self._pdf_max_images = pdf_max_images
-        self._vision_slots = asyncio.Semaphore(vision_concurrency)
-
     async def parse(self, document: SourceDocument, depth: int = 0) -> ParsedDocument:
         kind = detect_type(document.content, document.name)
         title = document.metadata.get("title") or document.name.rsplit(".", 1)[0]
@@ -520,23 +438,11 @@ class ParserRouter:
             )
 
         if kind == ".pdf":
-            if self._docintel is not None and self._pdf_parser in ("auto", "docintel"):
-                return await self._docintel.parse(source, doc.name, content)
             elements, pages, empty = await asyncio.to_thread(parse_pdf_native, content)
-            parser, flags = "pypdf", []
-            if self._pdf_images:
-                figures, figure_flags = await self._describe_pdf_images(doc.name, content)
-                if figures:
-                    # Stable sort: each page's text first, then what its images show.
-                    elements = sorted([*elements, *figures], key=lambda e: e.page or 0)
-                    parser = "pypdf+vision"
-                    described = {f.page for f in figures}
-                    empty = [p for p in empty if p not in described]
-                flags += figure_flags
-            parsed = make(elements, parser, pages=pages)
+            parsed = make(elements, "pypdf", pages=pages)
             if empty:
-                flags.append(f"pages_without_text:{len(empty)}/{pages}")  # C-075: needs OCR
-            parsed.quality_flags.extend(flags)
+                # C-075: scanned pages; their text is not extracted without OCR
+                parsed.quality_flags.append(f"pages_without_text:{len(empty)}/{pages}")
             return parsed
         if kind == ".docx":
             doc_title, elements = await asyncio.to_thread(parse_docx, content)
@@ -563,91 +469,16 @@ class ParserRouter:
             return self._parse_email(doc, title, depth)
         if kind == ".zip":
             return self._parse_zip(doc, title, depth)
-        if kind == ".image":
-            return await self._parse_image(doc, title)
-        if kind == ".media":
-            if self._transcriber is None:
-                raise DocumentLoadError("Audio/video needs AZURE_OPENAI_WHISPER_DEPLOYMENT")
-            return await self._transcriber.parse(source, doc.name, content)
+        if kind in (".image", ".media"):
+            raise DocumentLoadError(
+                f"{doc.name}: images and audio/video are not ingested (the LLM gateway is "
+                "text-only, so there is no OCR, vision or speech model)"
+            )
         if kind in (".txt", ".xml", ".yaml", ".yml"):
             return make(parse_text(_decode(content)), "text")
         raise DocumentLoadError(
             f"Unsupported file type for {doc.name} (detected {kind or 'unknown'})"
         )
-
-    async def _describe_pdf_images(
-        self, name: str, content: bytes
-    ) -> tuple[list[Element], list[str]]:
-        """C-075 / C-078 without Document Intelligence: what the PDF's diagrams, charts and
-        scanned pages show, as one figure element per image on its page. A failed image is
-        logged and skipped; the rest of the PDF is still ingested."""
-        try:
-            images, over_limit = await asyncio.to_thread(
-                extract_pdf_images, content, self._pdf_image_min_pixels, self._pdf_max_images
-            )
-        except Exception as exc:  # noqa: BLE001 - fall back to the text alone
-            logger.warning("pdf_image_extraction_failed", document=name, error=str(exc))
-            return [], ["pdf_images_unreadable"]
-
-        async def describe(page: int, data: bytes) -> Element | None:
-            async with self._vision_slots:
-                try:
-                    text = (await self._vision.describe(data)).strip()
-                except Exception as exc:  # noqa: BLE001 - one image must not fail the PDF
-                    logger.warning(
-                        "pdf_image_description_failed", document=name, page=page, error=str(exc)
-                    )
-                    return None
-            return Element("figure", f"Figure (page {page}): {text}", page=page) if text else None
-
-        results = await asyncio.gather(*(describe(page, data) for page, data in images))
-        figures = [r for r in results if r is not None]
-        flags = []
-        if over_limit:
-            flags.append(f"pdf_images_not_described:{over_limit}")  # raise PDF_MAX_IMAGES
-        if len(figures) < len(images):
-            flags.append(f"pdf_image_descriptions_failed:{len(images) - len(figures)}")
-        logger.info(
-            "pdf_images_described",
-            document=name,
-            described=len(figures),
-            extracted=len(images),
-            over_limit=over_limit,
-        )
-        return figures, flags
-
-    async def _parse_image(self, doc: SourceDocument, title: str) -> ParsedDocument:
-        """C-075 / C-078: OCR with Document Intelligence and/or describe with the vision model."""
-        mode = self._image_parser
-        if mode == "off":
-            raise DocumentLoadError("Image ingestion is disabled (IMAGE_PARSER=off)")
-        fmt = image_format(doc.content)
-        _, ocr_supported, vision_supported = IMAGE_FORMATS.get(fmt, ("", False, False))
-        can_ocr = self._docintel is not None and ocr_supported
-        can_describe = self._vision is not None and vision_supported
-
-        ocr = None
-        if can_ocr and mode in ("auto", "docintel", "docintel+vision"):
-            ocr = await self._docintel.parse_image(doc.source, doc.name, doc.content)
-            enough_text = len(ocr.text.strip()) >= self._image_min_ocr_chars
-            if mode == "docintel" or (mode == "auto" and (enough_text or not can_describe)):
-                return ocr
-        description = None
-        if can_describe and mode in ("auto", "vision", "docintel+vision"):
-            description = await self._vision.parse(doc.source, doc.name, doc.content)
-        if ocr is None and description is None:
-            raise DocumentLoadError(
-                f"No image processor for {fmt or 'unknown'} image {doc.name} (IMAGE_PARSER={mode})."
-                " Document Intelligence reads PNG/JPEG/BMP/TIFF/HEIF (DOC_INTELLIGENCE_ENDPOINT);"
-                " the vision model reads PNG/JPEG/GIF/WebP (AZURE_OPENAI_VISION_DEPLOYMENT)."
-            )
-        if ocr is None:
-            return description
-        if description is None:
-            return ocr
-        ocr.elements.extend(description.elements)  # scanned text + what the picture shows
-        ocr.parser = f"{ocr.parser}+vision"
-        return ocr
 
     def _parse_email(self, doc: SourceDocument, title: str, depth: int) -> ParsedDocument:
         message = email.message_from_bytes(doc.content, policy=policy.default)

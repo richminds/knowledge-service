@@ -1,7 +1,7 @@
 """Scheduled full synchronisation (C-146): re-walks every configured source, ingests new or
 changed documents, applies ACL changes and deletes documents that disappeared (C-144),
-then reports count reconciliation (C-139). Schedule it nightly (Container Apps Job cron
-or an Azure Pipelines schedule).
+then reports count reconciliation (C-139). Schedule it nightly (a cron job
+or a CI schedule).
 
 Sources are listed in config/sync_schedule.yaml (placeholder).
 

@@ -2,10 +2,10 @@
 
 URI: confluence://<SPACEKEY>  (all pages of a space, with hierarchy and attachments)
 Placeholders: CONFLUENCE_BASE_URL (https://<org>.atlassian.net/wiki), CONFLUENCE_USER and
-CONFLUENCE_API_TOKEN (Key Vault: confluence-api-token).
+CONFLUENCE_API_TOKEN.
 
 Permissions: page read restrictions (groups/users) become the ACL. Confluence group names
-are not Entra ids: map them in config/acl_mapping.yaml (TODO); unmapped restricted pages
+are not auth-service ids: map them in config/acl_mapping.yaml (TODO); unmapped restricted pages
 get an empty ACL and are therefore invisible (fail closed). Unrestricted pages inherit
 the space permissions -> CONFLUENCE_DEFAULT_ACL (default "*").
 """

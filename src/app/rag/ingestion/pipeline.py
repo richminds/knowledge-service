@@ -109,9 +109,6 @@ class SourceConfig:
     """Where the pipeline may read from (kept for callers building a local-only pipeline)."""
 
     local_root: str = "./data"
-    storage_connection_string: str = ""
-    storage_account_url: str = ""
-    storage_credential: object | None = None
 
 
 @dataclass
@@ -167,19 +164,6 @@ class IngestionPipeline:
         self._graph_extractor = graph_extractor
         sources = sources or SourceConfig()
         self._connectors = connectors or ConnectorRegistry(LocalConnector(sources.local_root))
-        if connectors is None and (
-            sources.storage_connection_string or sources.storage_account_url
-        ):
-            from app.rag.ingestion.connectors.blob import BlobConnector
-
-            self._connectors.register(
-                "blob://",
-                lambda: BlobConnector(
-                    sources.storage_connection_string,
-                    sources.storage_account_url,
-                    sources.storage_credential,
-                ),
-            )
         self._parser = parser or ParserRouter()
         self._manifest = manifest or InMemoryManifest()
         self._zones = zones or NullZoneStore()
