@@ -260,7 +260,10 @@ class Settings(BaseSettings):
     agentic_checkpoint_dsn: SecretStr = SecretStr("")
     # A-13 external web search (Tavily-compatible API). Off unless both are set AND "web" is a tool.
     web_search_endpoint: Url = ""
-    web_search_api_key: SecretStr = SecretStr("")
+    # Legacy name: TAVILY_API_KEY (previous implementation).
+    web_search_api_key: SecretStr = Field(
+        default=SecretStr(""), validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "TAVILY_API_KEY")
+    )
 
     # --- Source documents ----------------------------------------------------------------
     ingestion_local_root: str = "./data"
