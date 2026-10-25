@@ -25,7 +25,7 @@ The assistant answers questions from TODO: *the organisation's policies, procedu
 
 ## Limits
 
-- It knows only the indexed documents. It does not know recent emails, chats or the public internet (unless web search is enabled).
+- It knows only the indexed documents. It does not know recent emails, chats or the public internet.
 - Documents are updated within TODO minutes of changing at the source.
 - It can be wrong. For decisions with legal, financial or HR consequences, check the cited source or ask the owner.
 - Do not paste confidential personal data into questions.

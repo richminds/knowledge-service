@@ -2,7 +2,7 @@
 
 Where each value comes from (highest priority first):
   1. Environment variables — URLs, flags, tuning and secrets.
-  2. `.env` file — local development only (never committed).
+  2. `.env.local`, then `.env` — local development only (never committed).
   3. Defaults below.
 Empty values are ignored at every level, so a blank `KEY=` never masks a real value.
 """
@@ -55,8 +55,9 @@ class Settings(BaseSettings):
     """Environment-driven application configuration (12-factor style)."""
 
     model_config = SettingsConfigDict(
+        # .env holds the deployed (Vercel) set; .env.local overrides it for local runs.
         # APP_ENV_FILE lets tests (or a second local profile) point elsewhere.
-        env_file=os.getenv("APP_ENV_FILE", ".env"),
+        env_file=os.getenv("APP_ENV_FILE") or (".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
         env_ignore_empty=True,
@@ -203,9 +204,29 @@ class Settings(BaseSettings):
     mongodb_semantic_reranker: Literal["llm", "cohere", "none"] = "llm"
     mongodb_semantic_candidates: int = Field(default=20, ge=1, le=100)
 
-    # --- Graph RAG: graph collections in the MongoDB database above -----------------------
-    graph_store_provider: Literal["mongo"] = "mongo"
-    # Collections <prefix>_chunks / _entities / _relations / _claims / _sections / _documents
+    # --- Graph RAG ---------------------------------------------------------------------------
+    # neo4j - Neo4j Aura (NEO4J_* below): native graph, Cypher templates and text-to-Cypher
+    # mongo - graph collections in the MongoDB database above (no Cypher)
+    graph_store_provider: Literal["mongo", "neo4j"] = "mongo"
+    # Neo4j Aura: the values in the credentials file Aura gives you when the instance is
+    # created (NEO4J_URI=neo4j+s://<id>.databases.neo4j.io). RAG_GRAPH_DB_* are the names
+    # of the previous implementation.
+    neo4j_uri: str = Field(
+        default="", validation_alias=AliasChoices("NEO4J_URI", "RAG_GRAPH_DB_URI")
+    )
+    neo4j_username: str = Field(
+        default="neo4j", validation_alias=AliasChoices("NEO4J_USERNAME", "RAG_GRAPH_DB_USER")
+    )
+    neo4j_password: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias=AliasChoices("NEO4J_PASSWORD", "RAG_GRAPH_DB_PASSWORD"),
+    )
+    neo4j_database: str = Field(
+        default="neo4j", validation_alias=AliasChoices("NEO4J_DATABASE", "RAG_GRAPH_DB_DATABASE")
+    )
+    neo4j_entity_vector_index: str = "rag_entity_embedding"  # entity linking (G-25)
+    neo4j_query_timeout_seconds: float = Field(default=30.0, gt=0)
+    # mongo: collections <prefix>_chunks / _entities / _relations / _claims / _sections / ...
     mongodb_graph_prefix: str = Field(default="rag_graph", pattern=r"^[A-Za-z_][A-Za-z0-9_]{0,40}$")
     mongodb_entity_vector_index: str = "rag_graph_entities_vector"  # entity linking (G-25)
     graph_create_schema_on_startup: bool = True
@@ -237,7 +258,7 @@ class Settings(BaseSettings):
 
     # --- Agentic RAG: LangGraph ----------------------------------------------------------
     # Tools the agent may use (D2): vector (semantic_search), keyword, fetch_document,
-    # graph (graph_local_search), graph_global, graph_query, calculator, date_math, web.
+    # graph (graph_local_search), graph_global, graph_query, calculator, date_math.
     agentic_tools: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "vector",
@@ -262,12 +283,6 @@ class Settings(BaseSettings):
     agentic_checkpointer: Literal["none", "memory", "mongo"] = "none"  # A-06
     # mongo: langgraph-checkpoint-mongodb; blank = MONGODB_URL
     agentic_checkpoint_dsn: SecretStr = SecretStr("")
-    # A-13 external web search (Tavily-compatible API). Off unless both are set AND "web" is a tool.
-    web_search_endpoint: Url = ""
-    # Legacy name: TAVILY_API_KEY (previous implementation).
-    web_search_api_key: SecretStr = Field(
-        default=SecretStr(""), validation_alias=AliasChoices("WEB_SEARCH_API_KEY", "TAVILY_API_KEY")
-    )
 
     # --- Source documents ----------------------------------------------------------------
     ingestion_local_root: str = "./data"
@@ -466,6 +481,12 @@ class Settings(BaseSettings):
             and bool(graph_tools & set(self.agentic_tools))
         )
 
+    @property
+    def graph_store_configured(self) -> bool:
+        if self.graph_store_provider == "neo4j":
+            return bool(self.neo4j_uri and self.neo4j_password.get_secret_value())
+        return bool(self.mongodb_url.get_secret_value())
+
     def configuration_errors(self) -> list[str]:
         """Missing settings for the enabled modes. Logged at startup, failed by readiness."""
         errors: list[str] = []
@@ -478,8 +499,12 @@ class Settings(BaseSettings):
         mongo = bool(self.mongodb_url.get_secret_value())
         if self.vector_enabled and not self.vector_store_configured:
             errors.append("MONGODB_URL is required for semantic/hybrid/agentic(vector) RAG")
-        if self.graph_enabled and not mongo:
-            errors.append("MONGODB_URL is required for graph RAG")
+        if self.graph_enabled and not self.graph_store_configured:
+            errors.append(
+                "NEO4J_URI and NEO4J_PASSWORD are required for graph RAG"
+                if self.graph_store_provider == "neo4j"
+                else "MONGODB_URL is required for graph RAG"
+            )
         if self.reranker == "cohere" and not self.reranker_endpoint:
             errors.append("RERANKER_ENDPOINT is required for RERANKER=cohere")
         if self.manifest_store == "mongo" and not mongo:

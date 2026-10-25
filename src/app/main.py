@@ -47,10 +47,13 @@ async def lifespan(app: FastAPI):
                     await vector_store.ensure_index()
                 except Exception:  # noqa: BLE001
                     logger.exception("ensure_index_failed", provider=provider)
-    if settings.graph_enabled and settings.mongodb_url.get_secret_value():
+    if settings.graph_enabled and settings.graph_store_configured:
         graph_store = get_graph_store(settings)
         stores.append(graph_store)
-        if settings.graph_create_schema_on_startup and settings.mongodb_create_indexes_on_startup:
+        # MONGODB_CREATE_INDEXES_ON_STARTUP also gates the Mongo graph's collections.
+        if settings.graph_create_schema_on_startup and (
+            settings.graph_store_provider == "neo4j" or settings.mongodb_create_indexes_on_startup
+        ):
             try:
                 await graph_store.ensure_schema()
             except Exception:  # noqa: BLE001

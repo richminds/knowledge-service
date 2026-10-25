@@ -348,16 +348,6 @@ def build_agent_tools(settings: Settings, semantic, graph) -> list:
         tools.append(t.calculator_tool())
     if "date_math" in wanted:
         tools.append(t.date_math_tool())
-    if (
-        "web" in wanted
-        and settings.web_search_endpoint
-        and settings.web_search_api_key.get_secret_value()
-    ):
-        tools.append(
-            t.web_search_tool(
-                settings.web_search_endpoint, settings.web_search_api_key.get_secret_value()
-            )
-        )
     return tools
 
 

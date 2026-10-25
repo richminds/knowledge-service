@@ -16,8 +16,10 @@ pypdf>=4.3.0
 python-docx>=1.1.0
 python-pptx>=1.0.0
 openpyxl>=3.1.0
-# Vectors, keyword search, graph and manifest: MongoDB Atlas
+# Vectors, keyword search and manifest: MongoDB Atlas
 pymongo>=4.13
+# Knowledge graph: Neo4j Aura (GRAPH_STORE_PROVIDER=neo4j)
+neo4j>=5.28
 networkx>=3.2
 # Agentic RAG
 langgraph>=1.0.0

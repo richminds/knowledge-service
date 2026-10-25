@@ -117,9 +117,8 @@ Each tool has a name, a description that tells the LLM **when** to use it, and a
 | `fetch_document` | The full text of a document already found | When one passage is not enough |
 | `calculator` | Safe arithmetic (numbers and operators only) | Totals, percentages, differences |
 | `date_math` | Days between dates, or date plus N days | Deadlines |
-| `web_search` | Optional external search | Off by default; needs endpoint and key, and your data policy must allow it |
 
-Which tools are active is set by `AGENTIC_TOOLS`. Utility tools (`calculator`, `date_math`) and `web_search` are not used as automatic fallbacks, only when the LLM picks them.
+Which tools are active is set by `AGENTIC_TOOLS`. Utility tools (`calculator`, `date_math`) are not used as automatic fallbacks, only when the LLM picks them.
 
 ---
 
@@ -270,7 +269,6 @@ Set in the `.env` file (see [.env.example](../.env.example) for all options).
 | `AGENTIC_GENERATE_AND_CHECK` | `true` | Draft and self-check the answer inside the agent |
 | `AGENTIC_REVIEW_ON_FAILED_CHECK` | `true` | Flag answers that failed the final check |
 | `AGENTIC_CHECKPOINTER` | `none` | Save agent state between steps (`memory` or `mongo`) |
-| `WEB_SEARCH_ENDPOINT` / `WEB_SEARCH_API_KEY` | empty | Enable the optional web search tool |
 
 ---
 
@@ -290,6 +288,6 @@ Set in the `.env` file (see [.env.example](../.env.example) for all options).
 
 1. **Agentic RAG** lets an LLM plan, search with several tools, grade the evidence, retry, and check its own answer.
 2. The loop is **route, plan, retrieve, grade, refine, generate, check**, repeated within strict limits.
-3. Its tools include semantic, keyword and graph search, document fetch, a calculator, date maths and optional web search.
+3. Its tools include semantic, keyword and graph search, document fetch, a calculator and date maths. There is no web search: answers come from the indexed corpus only.
 4. The **benefits** are better answers to multi-step questions, recovery from weak searches, fewer unsupported answers, and a clear evidence trail.
 5. The **cost** is more time and more LLM calls, so it is used for `multi_step` questions or as the last escalation step, and simple questions stay on `hybrid`.
