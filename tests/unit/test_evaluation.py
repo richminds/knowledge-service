@@ -61,7 +61,7 @@ def test_load_golden_types(tmp_path):
 
 
 async def test_eval_runner_end_to_end(ingestion_pipeline, retrieval_service, chat_client):
-    await ingestion_pipeline.run("docs", "default")
+    await ingestion_pipeline.run("docs", "default", metadata={"account_id": "acct-test"})
     cases = [
         GoldenCase(
             "How many annual leave days?",

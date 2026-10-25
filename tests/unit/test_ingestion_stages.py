@@ -140,7 +140,9 @@ async def test_email_and_zip_attachments_are_ingested(ingestion_pipeline, vector
             "inner/guide.md", "# Guide\n\nThe guide explains reimbursement for staff travel claims."
         )
     stats = await ingestion_pipeline.run_for_documents(
-        [_src("mail.eml", message.as_bytes()), _src("bundle.zip", archive.getvalue())], "default"
+        [_src("mail.eml", message.as_bytes()), _src("bundle.zip", archive.getvalue())],
+        "default",
+        metadata={"account_id": "acct-test"},
     )
     sources = {r.source for r in vector_store.records.values()}
     assert {"test/mail.eml", "test/mail.eml#rates.txt", "test/bundle.zip#inner/guide.md"} <= sources
@@ -283,7 +285,9 @@ async def test_pipeline_indexes_question_records(ingestion_pipeline, vector_stor
         chat_client, EnrichmentOptions(questions=2, profile=True)
     )
     await ingestion_pipeline.run_for_documents(
-        [LoadedDocument("leave.md", "Annual leave entitlement is twenty five days.")], "default"
+        [LoadedDocument("leave.md", "Annual leave entitlement is twenty five days.")],
+        "default",
+        metadata={"account_id": "acct-test"},
     )
     kinds = sorted(r.kind for r in vector_store.records.values())
     assert "question" in kinds and "summary" in kinds  # S-06 + document summary (S-14)
@@ -317,14 +321,14 @@ def pipeline(embedding_client, vector_store, docs_root):
 async def test_unchanged_documents_are_skipped_and_acl_changes_applied(
     pipeline, docs_root, vector_store
 ):
-    first = await pipeline.run("src", "default")
+    first = await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     assert first.document_count == 2
 
-    second = await pipeline.run("src", "default")
+    second = await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     assert second.document_count == 0 and len(second.unchanged) == 2  # C-143
 
     (docs_root / "src" / "a.md.acl.json").write_text(json.dumps(["grp-hr"]))
-    third = await pipeline.run("src", "default")
+    third = await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     assert [s.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] for s in third.acl_updated] == [
         "a.md"
     ]  # C-145
@@ -333,27 +337,29 @@ async def test_unchanged_documents_are_skipped_and_acl_changes_applied(
 
 
 async def test_full_sync_propagates_deletions(pipeline, docs_root, vector_store):
-    await pipeline.run("src", "default")
+    await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     (docs_root / "src" / "b.md").unlink()
-    stats = await pipeline.run("file://src", "default", full_sync=True)
+    stats = await pipeline.run(
+        "file://src", "default", full_sync=True, metadata={"account_id": "acct-test"}
+    )
     assert [s.rsplit("b.md", 1)[1] for s in stats.deleted] == [""]
     assert not any(r.source.endswith("b.md") for r in vector_store.records.values())
     assert any(r.source.endswith("a.md") for r in vector_store.records.values())
     assert stats.reconciliation["mismatches"] == 0
     # a plain (non-full) run never deletes
     (docs_root / "src" / "a.md").unlink()
-    stats = await pipeline.run("src", "default")
+    stats = await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     assert stats.deleted == [] and any(
         r.source.endswith("a.md") for r in vector_store.records.values()
     )
 
 
 async def test_near_duplicates_are_skipped(pipeline, docs_root):
-    await pipeline.run("src", "default")
+    await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     (docs_root / "src" / "copy.md").write_text(
         "# A\n\nAnnual leave is twenty five days for all staff."
     )
-    stats = await pipeline.run("src", "default")
+    stats = await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     assert any(s.endswith("copy.md") for s in stats.duplicates)
 
 
@@ -375,7 +381,7 @@ async def test_zones_persist_each_stage(embedding_client, vector_store, docs_roo
         zones=LocalZoneStore(str(zones_root)),
     )
     (docs_root / "src" / "tiny.md").write_text("x")
-    await pipeline.run("src", "default")
+    await pipeline.run("src", "default", metadata={"account_id": "acct-test"})
     zones = {p.relative_to(zones_root).parts[0] for p in zones_root.rglob("*") if p.is_file()}
     assert zones == {"raw", "parsed", "clean", "chunks", "quarantine"}
 
@@ -442,7 +448,10 @@ async def test_tuned_chunking_end_to_end(embedding_client, vector_store, chat_cl
         enricher=Enricher(chat_client, EnrichmentOptions(context=True, questions=3)),
         options=PipelineOptions(
             chunking=ChunkingOptions(
-                chunk_size=40, chunk_overlap=10, min_chunk_tokens=5, parent_size=400,
+                chunk_size=40,
+                chunk_overlap=10,
+                min_chunk_tokens=5,
+                parent_size=400,
                 strategy="semantic",
             ),
             governance=GovernancePolicy(min_text_chars=10),
@@ -452,7 +461,9 @@ async def test_tuned_chunking_end_to_end(embedding_client, vector_store, chat_cl
         f"Rule {i}: annual leave requests for team {i} need manager approval two weeks ahead."
         for i in range(6)
     )
-    await pipeline.run_for_documents([LoadedDocument("leave.md", text)], "default")
+    await pipeline.run_for_documents(
+        [LoadedDocument("leave.md", text)], "default", metadata={"account_id": "acct-test"}
+    )
 
     records = list(vector_store.records.values())
     chunks = [r for r in records if r.kind == "chunk"]
@@ -465,7 +476,8 @@ async def test_tuned_chunking_end_to_end(embedding_client, vector_store, chat_cl
     assert all(p.embedding is None for p in parents.values())  # parents are fetched, not searched
 
     strategy = SemanticRagStrategy(
-        VectorRetriever(embedding_client, vector_store), vector_store,
+        VectorRetriever(embedding_client, vector_store),
+        vector_store,
         options=SemanticOptions(expand="parent"),
     )
     filters = RetrievalFilters(collection="default")

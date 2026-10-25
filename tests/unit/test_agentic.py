@@ -64,6 +64,7 @@ async def test_search_tools_enforce_acl(ingestion_pipeline, vector_store, embedd
     await ingestion_pipeline.run_for_documents(
         [LoadedDocument("secret.md", "Board salary bands for SECRET-42", acl=["grp-board"])],
         "default",
+        metadata={"account_id": "acct-test"},
     )
     outsider = RetrievalFilters(collection="default", principals=frozenset({"*"}))
     keyword = keyword_tool(VectorRetriever(embedding_client, vector_store))
@@ -186,6 +187,7 @@ async def test_service_uses_agent_answer_and_clarification(
         [LoadedDocument("org.md", "Alice manages Finance. Finance funds Travel.")],
         "default",
         targets=["vector", "graph"],
+        metadata={"account_id": "acct-test"},
     )
     calls_before = len(chat_client.calls)
     response = await retrieval_service.chat(

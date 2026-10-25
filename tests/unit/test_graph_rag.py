@@ -151,6 +151,7 @@ async def org_graph(ingestion_pipeline):
         ],
         "default",
         targets=["vector", "graph"],
+        metadata={"account_id": "acct-test"},
     )
 
 
@@ -239,7 +240,9 @@ async def test_falls_back_to_semantic_when_no_entities(
     ingestion_pipeline, graph_store, chat_client, strategies
 ):
     await ingestion_pipeline.run_for_documents(
-        [LoadedDocument("leave.md", "annual leave is generous")], "default"
+        [LoadedDocument("leave.md", "annual leave is generous")],
+        "default",
+        metadata={"account_id": "acct-test"},
     )
     strategy = _strategy(
         graph_store, chat_client, fallback=strategies[RagMode.SEMANTIC], mode="local"

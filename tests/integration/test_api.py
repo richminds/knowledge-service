@@ -25,7 +25,14 @@ def test_request_id_is_propagated(client):
 
 
 def test_ingestion_job_then_retrieval_and_chat(client):
-    start = client.post("/api/v1/ingestion", json={"source_uri": "docs", "collection": "default"})
+    start = client.post(
+        "/api/v1/ingestion",
+        json={
+            "metadata": {"account_id": "acct-test"},
+            "source_uri": "docs",
+            "collection": "default",
+        },
+    )
     assert start.status_code == 202
 
     # TestClient runs background tasks before returning, so the job is already done.
@@ -43,7 +50,14 @@ def test_ingestion_job_then_retrieval_and_chat(client):
 
 
 def test_ingestion_rejects_path_traversal(client):
-    start = client.post("/api/v1/ingestion", json={"source_uri": "../../", "collection": "default"})
+    start = client.post(
+        "/api/v1/ingestion",
+        json={
+            "metadata": {"account_id": "acct-test"},
+            "source_uri": "../../",
+            "collection": "default",
+        },
+    )
     job = client.get(f"/api/v1/ingestion/{start.json()['job_id']}").json()
 
     assert job["status"] == "failed"
@@ -60,7 +74,10 @@ def test_upload_ingests_file(client):
     response = client.post(
         "/api/v1/ingestion/upload",
         files={"file": ("notes.md", b"Quarterly budget review notes", "text/markdown")},
-        data={"collection": "uploads", "metadata": json.dumps({"owner": "finance"})},
+        data={
+            "collection": "uploads",
+            "metadata": json.dumps({"owner": "finance", "account_id": "acct-test"}),
+        },
     )
 
     assert response.status_code == 200, response.text
@@ -79,12 +96,18 @@ def test_folder_upload_keeps_same_named_files_apart(client):
         response = client.post(
             "/api/v1/ingestion/upload",
             files={"file": ("readme.txt", f"{folder} team readme".encode(), "text/plain")},
-            data={"collection": "folders", "relative_path": f"Policies/{folder}/readme.txt"},
+            data={
+                "metadata": '{"account_id": "acct-test"}',
+                "collection": "folders",
+                "relative_path": f"Policies/{folder}/readme.txt",
+            },
         )
         assert response.status_code == 200, response.text
         assert response.json()["source"] == f"upload://Policies/{folder}/readme.txt"
 
-    sources = {e["source"] for e in client.get("/api/v1/ingestion/manifest?collection=folders").json()}
+    sources = {
+        e["source"] for e in client.get("/api/v1/ingestion/manifest?collection=folders").json()
+    }
     assert sources == {"upload://Policies/hr/readme.txt", "upload://Policies/it/readme.txt"}
 
 
@@ -92,7 +115,11 @@ def test_upload_path_cannot_escape_with_dot_dot(client):
     response = client.post(
         "/api/v1/ingestion/upload",
         files={"file": ("a.txt", b"Some text worth indexing", "text/plain")},
-        data={"collection": "folders", "relative_path": "../../etc/C:/a.txt"},
+        data={
+            "metadata": '{"account_id": "acct-test"}',
+            "collection": "folders",
+            "relative_path": "../../etc/C:/a.txt",
+        },
     )
 
     assert response.json()["source"] == "upload://etc/a.txt"
@@ -108,14 +135,21 @@ def test_upload_path_cannot_escape_with_dot_dot(client):
     ],
 )
 def test_upload_rejects_disallowed_or_mismatched_types(client, name, content, reason):
-    response = client.post("/api/v1/ingestion/upload", files={"file": (name, content)})
+    response = client.post(
+        "/api/v1/ingestion/upload",
+        files={"file": (name, content)},
+        data={"metadata": '{"account_id": "acct-test"}'},
+    )
 
     assert response.status_code == 415
     assert reason in response.json()["detail"]
 
 
 def test_delete_collection(client):
-    client.post("/api/v1/ingestion", json={"source_uri": "docs", "collection": "temp"})
+    client.post(
+        "/api/v1/ingestion",
+        json={"metadata": {"account_id": "acct-test"}, "source_uri": "docs", "collection": "temp"},
+    )
 
     response = client.delete("/api/v1/ingestion/collections/temp")
 
@@ -124,7 +158,14 @@ def test_delete_collection(client):
 
 
 def test_chat_stream_emits_sse_events(client):
-    client.post("/api/v1/ingestion", json={"source_uri": "docs", "collection": "default"})
+    client.post(
+        "/api/v1/ingestion",
+        json={
+            "metadata": {"account_id": "acct-test"},
+            "source_uri": "docs",
+            "collection": "default",
+        },
+    )
 
     with client.stream("POST", "/api/v1/chat/stream", json={"query": "leave days"}) as response:
         body = "".join(response.iter_text())
@@ -163,7 +204,7 @@ def test_each_rag_mode_can_be_selected_per_request(client):
     upload = client.post(
         "/api/v1/ingestion/upload",
         files={"file": ("org.md", b"Alice manages the Finance department.", "text/markdown")},
-        data={"targets": "vector,graph"},
+        data={"metadata": '{"account_id": "acct-test"}', "targets": "vector,graph"},
     )
     assert upload.json()["entity_count"] >= 2, upload.text
 
@@ -193,7 +234,14 @@ def test_unknown_rag_mode_is_a_validation_error(client):
 
 
 def _ingest_docs(client):
-    client.post("/api/v1/ingestion", json={"source_uri": "docs", "collection": "default"})
+    client.post(
+        "/api/v1/ingestion",
+        json={
+            "metadata": {"account_id": "acct-test"},
+            "source_uri": "docs",
+            "collection": "default",
+        },
+    )
 
 
 def test_chat_returns_quality_usage_and_response_id(client):
@@ -260,7 +308,14 @@ def test_feedback_is_accepted(client):
 
 
 def test_manifest_lists_document_status(client):
-    client.post("/api/v1/ingestion", json={"source_uri": "docs", "collection": "default"})
+    client.post(
+        "/api/v1/ingestion",
+        json={
+            "metadata": {"account_id": "acct-test"},
+            "source_uri": "docs",
+            "collection": "default",
+        },
+    )
 
     entries = client.get("/api/v1/ingestion/manifest", params={"collection": "default"}).json()
 

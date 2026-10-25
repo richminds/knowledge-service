@@ -22,7 +22,10 @@ LEAVE_DOC = LoadedDocument(
 
 async def _ingest(ingestion_pipeline):
     await ingestion_pipeline.run_for_documents(
-        [ORG_DOC, LEAVE_DOC], "default", targets=["vector", "graph"]
+        [ORG_DOC, LEAVE_DOC],
+        "default",
+        targets=["vector", "graph"],
+        metadata={"account_id": "acct-test"},
     )
 
 

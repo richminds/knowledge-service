@@ -19,13 +19,18 @@ LEAVE_DOC = LoadedDocument(
 
 async def _ingest_both(ingestion_pipeline):
     await ingestion_pipeline.run_for_documents(
-        [ORG_DOC, LEAVE_DOC], "default", targets=["vector", "graph"]
+        [ORG_DOC, LEAVE_DOC],
+        "default",
+        targets=["vector", "graph"],
+        metadata={"account_id": "acct-test"},
     )
 
 
 # -- ingestion targets ------------------------------------------------------------------
 async def test_graph_target_extracts_entities_and_relations(ingestion_pipeline, graph_store):
-    stats = await ingestion_pipeline.run_for_documents([ORG_DOC], "default", targets=["graph"])
+    stats = await ingestion_pipeline.run_for_documents(
+        [ORG_DOC], "default", targets=["graph"], metadata={"account_id": "acct-test"}
+    )
 
     assert stats.targets == ["graph"]
     assert stats.chunk_count == 0  # vector store untouched
@@ -39,9 +44,13 @@ async def test_graph_target_extracts_entities_and_relations(ingestion_pipeline, 
 
 
 async def test_reingesting_rebuilds_the_documents_subgraph(ingestion_pipeline, graph_store):
-    await ingestion_pipeline.run_for_documents([ORG_DOC], "default", targets=["graph"])
+    await ingestion_pipeline.run_for_documents(
+        [ORG_DOC], "default", targets=["graph"], metadata={"account_id": "acct-test"}
+    )
     edited = LoadedDocument(source="org.md", text="Bob runs Procurement.")
-    await ingestion_pipeline.run_for_documents([edited], "default", targets=["graph"])
+    await ingestion_pipeline.run_for_documents(
+        [edited], "default", targets=["graph"], metadata={"account_id": "acct-test"}
+    )
 
     keys = {e.key for c in graph_store.chunks.values() for e in c.entities}
     assert keys == {"bob", "procurement"}
@@ -51,7 +60,9 @@ async def test_unconfigured_target_fails_fast(embedding_client, vector_store):
     pipeline = IngestionPipeline(embedding_client, vector_store)  # no graph store
 
     with pytest.raises(IngestionConfigError):
-        await pipeline.run_for_documents([ORG_DOC], "default", targets=["graph"])
+        await pipeline.run_for_documents(
+            [ORG_DOC], "default", targets=["graph"], metadata={"account_id": "acct-test"}
+        )
 
 
 # -- strategies ---------------------------------------------------------------------------

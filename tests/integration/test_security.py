@@ -7,7 +7,7 @@ def _upload(client, name, text, acl="", headers=None):
     return client.post(
         "/api/v1/ingestion/upload",
         files={"file": (name, text.encode(), "text/markdown")},
-        data={"acl": acl},
+        data={"acl": acl, "metadata": '{"account_id": "acct-test"}'},
         headers=headers or {},
     )
 
@@ -31,18 +31,38 @@ def test_ingested_chunks_carry_the_callers_account_id(client, gateway, vector_st
     assert all(m["account_id"] == "ACC-sales" and m["team"] == "sales" for m in metadata)
 
 
-def test_callers_without_an_account_cannot_set_one(client, gateway, vector_store):
+def test_callers_without_an_account_cannot_ingest(client, gateway, vector_store):
+    # account_id is mandatory: a caller-supplied one does not stand in for the gateway's.
     response = client.post(
         "/api/v1/ingestion/upload",
         files={"file": ("none.md", b"Office opening hours", "text/markdown")},
         data={"metadata": '{"account_id": "ACC-spoofed"}'},
         headers=gateway(),
     )
-    assert response.status_code == 200
+    assert response.status_code == 422
+    assert "account_id is required" in response.json()["detail"]
+    assert not _chunk_metadata(vector_store, "upload://none.md")
 
-    metadata = _chunk_metadata(vector_store, "upload://none.md")
-    assert metadata
-    assert all("account_id" not in m for m in metadata)
+
+def test_local_callers_must_name_an_account(client, vector_store):
+    # AUTH_MODE=none: the account comes from metadata, and is still required.
+    missing = client.post(
+        "/api/v1/ingestion/upload",
+        files={"file": ("local.md", b"Office opening hours", "text/markdown")},
+    )
+    assert missing.status_code == 422
+    job = client.post("/api/v1/ingestion", json={"source_uri": "docs", "collection": "default"})
+    assert job.status_code == 422
+
+    named = client.post(
+        "/api/v1/ingestion/upload",
+        files={"file": ("local.md", b"Office opening hours", "text/markdown")},
+        data={"metadata": '{"account_id": "ACC-local"}'},
+    )
+    assert named.status_code == 200
+    assert {m["account_id"] for m in _chunk_metadata(vector_store, "upload://local.md")} == {
+        "ACC-local"
+    }
 
 
 def _sources(client, headers, query="payroll"):
@@ -110,11 +130,13 @@ def test_missing_gateway_identity_is_rejected(client, gateway):
 
 def test_ingestion_needs_admin_only_when_configured(client, gateway, monkeypatch):
     # Default: any signed-in user may ingest.
-    assert _upload(client, "a.md", "text", headers=gateway()).status_code == 200
+    member = gateway(account_id="ACC-1")
+    assert _upload(client, "a.md", "text", headers=member).status_code == 200
 
     monkeypatch.setattr(get_settings(), "ingestion_requires_admin", True)
-    assert _upload(client, "a.md", "text", headers=gateway()).status_code == 403
-    assert _upload(client, "a.md", "text", headers=gateway(is_admin=True)).status_code == 200
+    assert _upload(client, "a.md", "text", headers=member).status_code == 403
+    admin = gateway(account_id="ACC-1", is_admin=True)
+    assert _upload(client, "a.md", "text", headers=admin).status_code == 200
     gone = client.delete(
         "/api/v1/ingestion/sources", params={"source": "upload://a.md"}, headers=gateway()
     )

@@ -26,7 +26,7 @@ def test_context_prompt_numbers_passages():
 async def test_chat_returns_numbered_citations_and_passes_history(
     ingestion_pipeline, retrieval_service, chat_client
 ):
-    await ingestion_pipeline.run("docs", "default")
+    await ingestion_pipeline.run("docs", "default", metadata={"account_id": "acct-test"})
     history = [
         ChatMessage(role="user", content="hi"),
         ChatMessage(role="assistant", content="hello"),

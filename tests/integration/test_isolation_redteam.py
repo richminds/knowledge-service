@@ -14,7 +14,7 @@ def _upload(client, name, text, acl="", headers=None, collection="default"):
     return client.post(
         "/api/v1/ingestion/upload",
         files={"file": (name, text.encode(), "text/markdown")},
-        data={"acl": acl, "collection": collection},
+        data={"acl": acl, "collection": collection, "metadata": '{"account_id": "acct-test"}'},
         headers=headers or {},
     )
 
@@ -35,7 +35,11 @@ def test_restricted_content_never_reaches_chat_answers_or_citations(client, gate
     assert _upload(client, "deal.md", SECRET, "ACC-legal", legal).status_code == 200
     assert (
         _upload(
-            client, "faq.md", "Merger questions go to the press office", "", gateway()
+            client,
+            "faq.md",
+            "Merger questions go to the press office",
+            "",
+            gateway(account_id="ACC-sales"),
         ).status_code
         == 200
     )
@@ -54,9 +58,13 @@ def test_restricted_content_never_reaches_chat_answers_or_citations(client, gate
 
 
 def test_restricted_content_never_reaches_the_stream(client, gateway):
-    _upload(client, "deal.md", SECRET, "ACC-legal", gateway())
+    legal = gateway(account_id="ACC-legal")
+    assert _upload(client, "deal.md", SECRET, "ACC-legal", legal).status_code == 200
     with client.stream(
-        "POST", "/api/v1/chat/stream", json={"query": "merger codename"}, headers=gateway()
+        "POST",
+        "/api/v1/chat/stream",
+        json={"query": "merger codename"},
+        headers=gateway(account_id="ACC-sales"),
     ) as response:
         body = "".join(response.iter_text())
     assert response.status_code == 200
@@ -76,9 +84,12 @@ def test_conversations_are_private_to_their_owner(client, gateway):
     from app.api import deps
 
     store = client.app.dependency_overrides[deps.get_conversation_store]()
-    _upload(client, "leave.md", "Annual leave is 25 days", "", gateway())
+    uploader = gateway(account_id="ACC-1")
+    assert _upload(client, "leave.md", "Annual leave is 25 days", "", uploader).status_code == 200
     first = client.post(
-        "/api/v1/chat", json={"query": "annual leave"}, headers=gateway(user_id="alice")
+        "/api/v1/chat",
+        json={"query": "annual leave"},
+        headers=gateway(user_id="alice", account_id="ACC-1"),
     )
     conversation_id = first.json()["conversation_id"]
 
@@ -86,12 +97,13 @@ def test_conversations_are_private_to_their_owner(client, gateway):
     client.post(
         "/api/v1/chat",
         json={"query": "and sick leave?", "conversation_id": conversation_id},
-        headers=gateway(user_id="bob"),
+        headers=gateway(user_id="bob", account_id="ACC-1"),
     )
 
     owners = {user for user, cid in store._data if cid == conversation_id}
     assert owners == {"alice", "bob"}  # two separate histories, never shared
-    assert client.delete("/api/v1/conversations/me", headers=gateway(user_id="bob")).json() == {
+    bob = gateway(user_id="bob", account_id="ACC-1")
+    assert client.delete("/api/v1/conversations/me", headers=bob).json() == {
         "deleted_conversations": 1
     }
     assert any(user == "alice" for user, _ in store._data)  # Alice's history untouched
@@ -123,11 +135,12 @@ def test_poisoned_document_is_quarantined_not_indexed(client):
 
 
 def test_acl_cannot_be_widened_through_request_filters(client, gateway):
-    _upload(client, "deal.md", SECRET, "ACC-legal", gateway())
+    legal = gateway(account_id="ACC-legal")
+    assert _upload(client, "deal.md", SECRET, "ACC-legal", legal).status_code == 200
     response = client.post(
         "/api/v1/retrieval",
         json={"query": "merger", "filters": {"sources": ["upload://deal.md"], "tags": ["*"]}},
-        headers=gateway(),
+        headers=gateway(account_id="ACC-sales"),
     )
     assert response.status_code in (200, 422)
     if response.status_code == 200:

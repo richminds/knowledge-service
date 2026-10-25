@@ -59,7 +59,9 @@ async def _ingest(multi, embedding_client):
             default_targets=("vector",),
         ),
     )
-    return await pipeline.run_for_documents([LEAVE], "default", targets=["vector"])
+    return await pipeline.run_for_documents(
+        [LEAVE], "default", targets=["vector"], metadata={"account_id": "acct-test"}
+    )
 
 
 async def test_ingestion_fills_both_stores(multi, stores, embedding_client):

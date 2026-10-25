@@ -37,15 +37,25 @@ def _csv(value: str) -> list[str] | None:
 
 
 def _with_account(metadata: dict[str, str], user: UserContext) -> dict[str, str]:
-    """Tag what is ingested with the caller's app account (X-Account-ID from the gateway).
+    """Tag what is ingested with the caller's app account. Mandatory: nothing is
+    ingested without one, so every chunk and graph fact belongs to an account.
 
-    Server-set: an `account_id` sent in the request metadata is always replaced (or
-    dropped when the caller has no account), so nobody can attribute documents to
-    another account."""
-    tagged = {k: v for k, v in metadata.items() if k != "account_id"}
-    if user.account_id:
-        tagged["account_id"] = user.account_id
-    return tagged
+    Gateway callers: server-set from X-Account-ID. An `account_id` sent in the request
+    metadata is always replaced, so nobody can attribute documents to another account.
+    Local callers (AUTH_MODE=none) are trusted and have no account of their own, so
+    they name it in `metadata.account_id`."""
+    if user.auth_method == "gateway":
+        account_id = user.account_id
+    else:
+        account_id = (metadata.get("account_id") or "").strip()
+    if not account_id:
+        raise HTTPException(
+            422,
+            "account_id is required: sign in through an app account (X-Account-ID)"
+            if user.auth_method == "gateway"
+            else "account_id is required: set it in metadata (AUTH_MODE=none)",
+        )
+    return {**{k: v for k, v in metadata.items() if k != "account_id"}, "account_id": account_id}
 
 
 @router.post("", response_model=IngestionResponse, status_code=status.HTTP_202_ACCEPTED)

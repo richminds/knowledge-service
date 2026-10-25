@@ -11,7 +11,14 @@ def admin_client(client, chat_client):
     from app.main import app
 
     app.dependency_overrides[deps.get_chat_client] = lambda: chat_client
-    client.post("/api/v1/ingestion", json={"source_uri": "docs", "collection": "default"})
+    client.post(
+        "/api/v1/ingestion",
+        json={
+            "metadata": {"account_id": "acct-test"},
+            "source_uri": "docs",
+            "collection": "default",
+        },
+    )
     return client
 
 
@@ -119,9 +126,7 @@ def test_vector_store_status_flags_a_store_that_fell_behind(admin_client, monkey
     from tests.fakes import FakeVectorStore
 
     filled = factory._vector_store_singleton
-    multi = MultiVectorStore(
-        {"mongo": filled, "mongo_b": FakeVectorStore()}, default="mongo"
-    )
+    multi = MultiVectorStore({"mongo": filled, "mongo_b": FakeVectorStore()}, default="mongo")
     monkeypatch.setattr(factory, "_vector_store_singleton", multi)
 
     body = admin_client.get("/api/v1/admin/rag/vector-stores").json()

@@ -268,6 +268,9 @@ class IngestionPipeline:
         return run.stats
 
     def _new_run(self, collection, targets, acl, metadata, force) -> _Run:
+        # Every chunk and graph fact belongs to an app account; refuse a run without one.
+        if not (metadata or {}).get("account_id", "").strip():
+            raise IngestionConfigError("metadata.account_id is required for ingestion")
         resolved = self._resolve_targets(targets)  # fail before loading anything
         run_id = uuid.uuid4().hex[:12]
         return _Run(
@@ -528,7 +531,7 @@ class IngestionPipeline:
             title=meta.title,
             section_path=" > ".join(chunk.section_path),
             acl=meta.acl,
-            account_id=meta.extra.get("account_id", ""),
+            account_id=meta.extra["account_id"],
             doc_type=meta.doc_type,
             language=meta.language,
             tags=meta.tags,
@@ -638,7 +641,7 @@ class IngestionPipeline:
                 content=chunk.text,
                 chunk_index=chunk.index,
                 acl=meta.acl,
-                account_id=meta.extra.get("account_id", ""),
+                account_id=meta.extra["account_id"],
                 doc_id=meta.doc_id,
                 title=meta.title,
                 section_path=chunk.section_path,  # lexical layer (G-20)

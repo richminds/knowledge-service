@@ -42,7 +42,10 @@ async def test_vector_and_graph_retrieval_enforce_acl(ingestion_pipeline, strate
     )
     public = LoadedDocument(source="pub.md", text="Finance publishes the annual report.")
     await ingestion_pipeline.run_for_documents(
-        [secret, public], "default", targets=["vector", "graph"]
+        [secret, public],
+        "default",
+        targets=["vector", "graph"],
+        metadata={"account_id": "acct-test"},
     )
 
     outsider = RetrievalFilters(collection="default", principals=frozenset({"*", "user-1"}))
@@ -308,7 +311,7 @@ async def test_chitchat_and_blocked_input_skip_retrieval(retrieval_service, chat
 async def test_conversation_history_is_loaded_by_id(
     ingestion_pipeline, retrieval_service, chat_client
 ):
-    await ingestion_pipeline.run("docs", "default")
+    await ingestion_pipeline.run("docs", "default", metadata={"account_id": "acct-test"})
     first = await retrieval_service.chat(ChatRequest(query="annual leave days"))
     await retrieval_service.chat(
         ChatRequest(query="and travel?", conversation_id=first.conversation_id)
@@ -376,14 +379,14 @@ async def test_answer_cache_hits_and_is_scoped(ingestion_pipeline, strategies, c
     from app.rag.strategies.registry import RagStrategyRegistry
     from app.services.retrieval_service import RetrievalService
 
-    await ingestion_pipeline.run("docs", "default")
+    await ingestion_pipeline.run("docs", "default", metadata={"account_id": "acct-test"})
     cache = AnswerCache()
     service = RetrievalService(
         RagStrategyRegistry(strategies, RagMode.SEMANTIC), chat_client, cache=cache
     )
-    # Both see the same (account-less) documents; only their principals differ.
-    alice = UserContext(user_id="alice")
-    bob = UserContext(user_id="bob")
+    # Both see the same documents (one account); only their principals differ.
+    alice = UserContext(user_id="alice", account_id="acct-test")
+    bob = UserContext(user_id="bob", account_id="acct-test")
 
     first = await service.chat(ChatRequest(query="annual leave days"), alice)
     again = await service.chat(ChatRequest(query="Annual leave days?"), alice)
@@ -397,7 +400,7 @@ async def test_answer_cache_hits_and_is_scoped(ingestion_pipeline, strategies, c
 async def test_explicit_filters_reach_the_retriever(
     ingestion_pipeline, retrieval_service, vector_store
 ):
-    await ingestion_pipeline.run("docs", "default")
+    await ingestion_pipeline.run("docs", "default", metadata={"account_id": "acct-test"})
     response = await retrieval_service.chat(
         ChatRequest(query="annual leave days", filters=SearchFilters(doc_types=["policy"]))
     )
