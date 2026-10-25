@@ -9,8 +9,8 @@ tool - not the agent - enforces permissions (A-17). All tools are read-only (A-4
   graph_query          templated / validated Cypher (A-11)
   fetch_document       the full parent document of a passage (A-14)
   calculator, date_math  utility tools (A-15)
-  web_search           optional external search when the corpus lacks the answer (A-13)
 Not included (TODO): sql_query (A-12) and sandboxed code execution (A-15, A-40).
+No external web search (A-13): answers come from the indexed corpus only.
  MCP exposure of these tools (A-18) is a future option.
 """
 
@@ -20,8 +20,6 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Any
-
-import httpx
 
 from app.rag.graph.strategy_modes import run_graph_mode
 from app.rag.types import RetrievalFilters
@@ -205,44 +203,4 @@ def date_math_tool() -> Tool:
         },
         run,
         {"utility"},
-    )
-
-
-def web_search_tool(endpoint: str, api_key: str, max_results: int = 5) -> Tool:
-    """A-13: Tavily-compatible search API (placeholder WEB_SEARCH_ENDPOINT/KEY). Off by default:
-    sending questions to an external service must be approved for your data policy."""
-    http = httpx.AsyncClient(timeout=15.0)
-
-    async def run(args: dict, filters: RetrievalFilters, top_k: int) -> list[VectorSearchResult]:
-        response = await http.post(
-            endpoint,
-            json={
-                "api_key": api_key,
-                "query": str(args.get("query", "")),
-                "max_results": max_results,
-            },
-        )
-        response.raise_for_status()
-        return [
-            VectorSearchResult(
-                chunk_id=f"web:{r.get('url', i)}",
-                content=str(r.get("content", ""))[:2000],
-                score=float(r.get("score", 0.5)),
-                source=str(r.get("url", "web")),
-                metadata={
-                    "retriever": "web",
-                    "tool": "web_search",
-                    "title": str(r.get("title", "")),
-                    "url": str(r.get("url", "")),
-                },
-            )
-            for i, r in enumerate(response.json().get("results", []))
-        ]
-
-    return Tool(
-        "web_search",
-        "Public web search. Use ONLY when internal sources have nothing relevant.",
-        QUERY_PARAM,
-        run,
-        {"web"},
     )

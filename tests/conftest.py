@@ -13,7 +13,7 @@ _PREFIXES = (
     "AZURE_", "GRAPH_", "RAG_", "INGESTION_", "API_KEY", "APPLICATIONINSIGHTS", "AUTH_",
     "ENTRA_", "CONTENT_SAFETY", "RERANKER", "COSMOS_", "REDIS_", "ANSWER_CACHE", "QUALITY_",
     "SEMANTIC_", "CONVERSATION_", "PROMPT_", "VECTOR_", "MONGODB_", "MANIFEST_", "LLM_",
-    "API_GATEWAY", "ADMIN_",
+    "API_GATEWAY", "ADMIN_", "NEO4J_",
 )  # fmt: skip
 for var in list(os.environ):
     if var.startswith(_PREFIXES):

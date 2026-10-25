@@ -111,6 +111,7 @@ async def rag_config(
             "max_upload_mb": settings.ingestion_max_upload_mb,
             "default_targets": [str(t) for t in settings.ingestion_targets],
             "graph_enabled": settings.graph_enabled,
+            "graph_store": settings.graph_store_provider,
             "supported_extensions": settings.ingestion_upload_extensions,
         },
         thresholds=_thresholds(settings.eval_thresholds_path),

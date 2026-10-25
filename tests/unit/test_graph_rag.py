@@ -208,13 +208,17 @@ async def test_global_mode_maps_community_reports(
 async def test_cypher_template_results_are_acl_filtered(graph_store, chat_client):
     chat_client.cypher_choice = {"template": "who_manages", "params": {"entity": "finance"}}
     graph_store.cypher_rows = [
-        ("Alice", "MANAGES", "Finance", "", ["*"], "c1"),
-        ("Mallory", "MANAGES", "Finance", "", ["grp-secret"], "c2"),
+        ("Alice", "MANAGES", "Finance", "", ["*"], "c1", "acct-1"),
+        ("Mallory", "MANAGES", "Finance", "", ["grp-secret"], "c2", "acct-1"),
+        ("Eve", "MANAGES", "Finance", "", ["*"], "c3", "acct-2"),
     ]
     strategy = _strategy(graph_store, chat_client, mode="cypher")
-    user = RetrievalFilters(collection="default", principals=frozenset({"*", "u1"}))
+    user = RetrievalFilters(
+        collection="default", principals=frozenset({"*", "u1"}), account_id="acct-1"
+    )
     out = await strategy.retrieve("Who manages Finance?", user, 5)
-    assert "Alice" in out.contexts[0].content and "Mallory" not in out.contexts[0].content
+    content = out.contexts[0].content
+    assert "Alice" in content and "Mallory" not in content and "Eve" not in content
 
 
 async def test_freeform_cypher_disabled_under_acl(graph_store, chat_client):

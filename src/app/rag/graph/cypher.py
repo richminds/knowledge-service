@@ -3,7 +3,8 @@ validation and safety (G-44).
 
 Templates (config/cypher_templates.yaml) are parameterised read-only queries for frequent
 question patterns. Every template returns the standard fact columns including the
-relation's ACL and chunk id, so results are ACL-filtered and citable.
+relation's ACL, chunk id and app account, so results are ACL- and account-filtered and
+citable.
 
 Free-form text-to-Cypher cannot be ACL-filtered generically (arbitrary projections), so it
 only runs when ACLs are not enforced or the caller holds GRAPH_CYPHER_ROLE; otherwise the
@@ -23,7 +24,15 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
-FACT_COLUMNS = ("source_name", "relation", "target_name", "description", "acl", "chunk_id")
+FACT_COLUMNS = (
+    "source_name",
+    "relation",
+    "target_name",
+    "description",
+    "acl",
+    "chunk_id",
+    "account_id",
+)
 _WRITE = re.compile(
     r"\b(CREATE|MERGE|SET|DELETE|DETACH|REMOVE|DROP|CALL|LOAD|FOREACH|UNWIND\s+.*\s+CREATE)\b",
     re.IGNORECASE,
@@ -46,7 +55,7 @@ CYPHER_PROMPT = (
 )
 SCHEMA = (
     "(:Entity {key, name, type, description, rank})-[:RELATED {type, description, weight, acl, "
-    "chunk_id}]->(:Entity)\n"
+    "chunk_id, account_id}]->(:Entity)\n"
     "(:Chunk {chunk_id, content, source, title, acl})-[:MENTIONS]->(:Entity)\n"
     "(:Claim {text, date, acl, chunk_id})-[:ABOUT]->(:Entity)"
 )

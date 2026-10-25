@@ -1,7 +1,7 @@
 # Parameterised read-only Cypher templates for frequent structured questions (G-45).
 # Every template must return the fact columns:
-#   source_name, relation, target_name, description, acl, chunk_id
-# so results can be ACL-filtered and cited. Parameters are lower-case entity keys.
+#   source_name, relation, target_name, description, acl, chunk_id, account_id
+# so results can be ACL- and account-filtered and cited. Parameters are lower-case entity keys.
 # Placeholders — add templates for your domain's frequent questions.
 templates:
   who_manages:
@@ -10,18 +10,18 @@ templates:
     query: >
       MATCH (a:Entity {collection: $collection})-[r:RELATED]->(b:Entity {collection: $collection})
       WHERE b.key = $entity AND r.type IN ['MANAGES', 'OWNS', 'APPROVES']
-      RETURN a.name, r.type, b.name, r.description, r.acl, r.chunk_id LIMIT 20
+      RETURN a.name, r.type, b.name, r.description, r.acl, r.chunk_id, r.account_id LIMIT 20
   depends_on:
     description: What an entity depends on or requires
     params: [entity]
     query: >
       MATCH (a:Entity {collection: $collection})-[r:RELATED]->(b:Entity {collection: $collection})
       WHERE a.key = $entity AND r.type IN ['DEPENDS_ON', 'PART_OF']
-      RETURN a.name, r.type, b.name, r.description, r.acl, r.chunk_id LIMIT 20
+      RETURN a.name, r.type, b.name, r.description, r.acl, r.chunk_id, r.account_id LIMIT 20
   applies_to:
     description: What a policy applies to
     params: [policy]
     query: >
       MATCH (a:Entity {collection: $collection})-[r:RELATED]->(b:Entity {collection: $collection})
       WHERE a.key = $policy AND r.type = 'APPLIES_TO'
-      RETURN a.name, r.type, b.name, r.description, r.acl, r.chunk_id LIMIT 20
+      RETURN a.name, r.type, b.name, r.description, r.acl, r.chunk_id, r.account_id LIMIT 20

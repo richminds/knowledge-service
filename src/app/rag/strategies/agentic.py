@@ -240,7 +240,7 @@ class AgenticRagStrategy(RagStrategy):
             calls = [
                 {"tool": name, "args": {"query": question}}
                 for name, t in self._tools.items()
-                if not t.tags & {"utility", "web"} and "query" in t.parameters
+                if "utility" not in t.tags and "query" in t.parameters
             ]
             complexity, clarification = "simple", None
             # One cheap call: tool choice, complexity, clarification.
@@ -323,9 +323,7 @@ class AgenticRagStrategy(RagStrategy):
                 (
                     t
                     for n, t in self._tools.items()
-                    if n != tool.name
-                    and "query" in t.parameters
-                    and not t.tags & {"utility", "web"}
+                    if n != tool.name and "query" in t.parameters and "utility" not in t.tags
                 ),
                 None,
             )

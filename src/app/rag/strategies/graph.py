@@ -442,8 +442,8 @@ class GraphRagStrategy(RagStrategy):
                 )
                 facts = [
                     GraphFact(s, r, t, d or "", chunk_id=c or "", acl=list(a or []))
-                    for s, r, t, d, a, c in rows
-                    if filters.allows(a or []) and filters.account_id is None
+                    for s, r, t, d, a, c, account in rows
+                    if filters.allows(a or []) and filters.allows_account(account or "")
                 ]
                 info.update(template=template.name, rows=len(facts))
                 if facts:

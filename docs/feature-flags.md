@@ -124,7 +124,7 @@ These run in this order inside `rag/strategies/semantic.py`.
 | `GRAPH_KNEE_CUTOFF` | `false` | `true` | Drops low-scoring facts and community reports after the sharp drop in scores |
 | `GRAPH_SEMANTIC_FALLBACK` | `true` | — | Falls back to semantic search when no entities match |
 | `GRAPH_ALLOW_FREEFORM_CYPHER` | `false` | — | Lets the LLM write Cypher. Only safe without per-user ACLs. |
-| `AGENTIC_TOOLS` | vector, keyword, fetch_document, graph, graph_global, calculator, date_math | — | Tools the agent may call. Graph tools need the graph store; `web` also needs `WEB_SEARCH_*`. |
+| `AGENTIC_TOOLS` | vector, keyword, fetch_document, graph, graph_global, calculator, date_math | — | Tools the agent may call. Graph tools need the graph store. |
 | `AGENTIC_MAX_ITERATIONS` / `AGENTIC_MAX_TOOL_CALLS` / `AGENTIC_MAX_TOKENS` / `AGENTIC_MAX_SECONDS` | 3 / 12 / 60000 / 90 | — | Hard limits per question |
 | `AGENTIC_GENERATE_AND_CHECK` | `true` | — | **LLM.** The agent checks its answer is grounded and complete, and revises it if not |
 | `AGENTIC_ALLOW_CLARIFY` | `false` | — | Lets the agent ask the user a clarifying question instead of answering |
